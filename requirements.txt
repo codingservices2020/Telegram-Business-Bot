@@ -1,0 +1,5 @@
+aiogram==2.23.1
+flask>=2.2
+apscheduler
+python-dotenv>=1.0
+python-telegram-bot[job-queue]
