@@ -13,12 +13,11 @@ from telegram.ext import (
     CallbackQueryHandler,
     filters,
 )
-# from keep_alive import keep_alive
-# keep_alive()
+from keep_alive import keep_alive
+keep_alive()
 
-from dotenv import load_dotenv
-
-load_dotenv()
+# from dotenv import load_dotenv
+# load_dotenv()
 
 # logging
 logging.basicConfig(
