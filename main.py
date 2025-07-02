@@ -1,6 +1,7 @@
 # telegram_bot.py
 import os
 import logging
+from datetime import datetime, timedelta
 from telegram import (
     Update,
     InlineKeyboardButton,
@@ -18,6 +19,9 @@ keep_alive()
 
 # from dotenv import load_dotenv
 # load_dotenv()
+
+
+admin_activity = {}  # {user_id: datetime}
 
 # logging
 logging.basicConfig(
@@ -135,11 +139,20 @@ async def handle_all_updates(update: Update, context) -> None:
         )
 
         if bm.from_user.id == ADMIN_CHAT_ID:
+            # ✅ Admin replied to a user
+            admin_activity[bm.chat.id] = datetime.now()
             logger.info("Message from admin, bot stays silent.")
             return
 
+        # ⏱ Check if admin replied in last 60 seconds — independent of can_reply
+        last_active = admin_activity.get(bm.chat.id)
+        if last_active and datetime.now() - last_active < timedelta(minutes=5):
+            logger.info("Admin recently replied, bot stays silent.")
+            return
+
+        # Only then fall back to can_reply check
         if not can_reply:
-            logger.info("Admin active, bot stays silent.")
+            logger.info("Admin is online (can_reply=False), bot stays silent.")
             return
 
         if bm.document:
@@ -201,23 +214,23 @@ async def handle_all_updates(update: Update, context) -> None:
         except Exception as e:
             logger.error(f"Error sending business reply: {e}")
 
-    if update.message and update.message.text:
-        text = update.message.text.lower()
-        if "service" in text:
-            reply = "We offer plagiarism, AI detection, and document checking. What do you need?"
-        elif "product" in text:
-            reply = "Our products include Turnitin and AI detection reports."
-        elif "contact" in text:
-            reply = "Email us at info@example.com or call +1234567890."
-        else:
-            reply = (
-                f"I received: '{text}'. Feel free to ask about pricing or services."
-            )
-        await update.message.reply_text(reply)
+    # # if someone send a to this bot
+    # if update.message and update.message.text:
+    #     text = update.message.text.lower()
+    #     if "service" in text:
+    #         reply = "We offer plagiarism, AI detection, and document checking. What do you need?"
+    #     elif "product" in text:
+    #         reply = "Our products include Turnitin and AI detection reports."
+    #     elif "contact" in text:
+    #         reply = "Email us at info@example.com or call +1234567890."
+    #     else:
+    #         reply = (
+    #             f"I received: '{text}'. Feel free to ask about pricing or services."
+    #         )
+    #     await update.message.reply_text(reply)
 
 
 # --- handle button clicks ---
-
 async def handle_callback_query(update: Update, context) -> None:
     query = update.callback_query
     await query.answer()
