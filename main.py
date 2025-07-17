@@ -25,7 +25,6 @@ logger = logging.getLogger(__name__)
 
 # Load environment variables
 TOKEN = os.getenv("TOKEN")
-BUSINESS_CONNECTION_ID = os.getenv("BUSINESS_CONNECTION_ID")
 PDF_PASSWORD = os.getenv("PDF_PASSWORD")
 SIGN_TEXT_1 = os.getenv("SIGN_TEXT_1")
 URL = f'https://api.telegram.org/bot{TOKEN}/getUpdates'
@@ -207,7 +206,11 @@ def get_start_keyboard():
 async def handle_all_updates(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.business_message and update.business_message.document:
         bm = update.business_message
+        global business_connection_id
+        business_connection_id = bm.business_connection_id
+        print(f"bm: {bm}")
         if bm.document:
+            print("document")
             try:
                 logger.info(f"📨 Business document received: {bm.document.file_name}")
                 print(f"bm.chat.id: {bm.chat.id}; type: {type(bm.chat.id)}")
@@ -220,16 +223,23 @@ async def handle_all_updates(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     user_id=user_id,
                     name=name,
                     username=username,
-                    business_chat_id=bm.chat.id
-                )
+                    business_chat_id=bm.chat.id,
+                    business_connection_id=bm.business_connection_id
 
-                await context.bot.send_message(
-                    business_connection_id=BUSINESS_CONNECTION_ID,
-                    chat_id=bm.chat.id,
-                    text=f"🤖*Thank you for submitting your article*🙏\n\n"
-                         f"✅Kindly wait while your report is being prepared. I will notify you as soon as it is ready for download.",
+                )
+                await bm.reply_text(
+                    "🤖*Thank you for submitting your article*🙏\n\n"
+                    "✅Kindly wait while your report is being prepared. I will notify you as soon as it is ready for download.",
                     parse_mode="Markdown",
                 )
+
+                # await context.bot.send_message(
+                #     business_connection_id=bm.business_connection_id,
+                #     chat_id=bm.chat.id,
+                #     text=f"🤖*Thank you for submitting your article*🙏\n\n"
+                #          f"✅Kindly wait while your report is being prepared. I will notify you as soon as it is ready for download.",
+                #     parse_mode="Markdown",
+                # )
             except Exception as e:
                 logger.error(f"Error replying to document upload: {e}")
             return
@@ -488,11 +498,10 @@ async def receive_user(update: Update, context: ContextTypes.DEFAULT_TYPE, prefi
     start_button = InlineKeyboardButton(start_button_text, callback_data=f"start_{user_id}")
     reply_markup = InlineKeyboardMarkup([[start_button]])
 
-    user_data = load_user_data().get(user_id, {})
-    business_chat_id = user_data.get("business_chat_id")
+
     await context.bot.send_message(
-        business_connection_id=BUSINESS_CONNECTION_ID,
-        chat_id=business_chat_id,
+        business_connection_id=business_connection_id,
+        chat_id=user_id,
         text=f"<b>🔰REPORT IS READY🔰</b>\n\n"
              f"Please, click on the button below and make the payment of <b>Rs {amount}/-</b> to download your report.",
         reply_markup=reply_markup,
@@ -569,7 +578,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     user_id = query.data.replace("download_", "")
-    await query.edit_message_text(f"Payment verifying. Please wait...")
+    await query.edit_message_text(f"♻️  Payment verifying. Please wait...")
     report_links = load_report_links() # Refresh from Firebase
     if user_id in report_links:
         invoice_amount = int(report_links[user_id]['amount'])
@@ -584,9 +593,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"<b>⬇️ Report Download Links:</b>\n{links_formatted}",
                 parse_mode="HTML"
             )
-
             await context.bot.send_message(
-                business_connection_id=BUSINESS_CONNECTION_ID,
+                business_connection_id=business_connection_id,
                 chat_id=user_id,
                 text=f"*🔰JOIN & SHARE🔰*\n\n"
                      f"✅Please share and join our Telegram channel with your friends to stay updated "
