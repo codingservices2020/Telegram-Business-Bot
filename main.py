@@ -206,8 +206,8 @@ def get_start_keyboard():
 async def handle_all_updates(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.business_message and update.business_message.document:
         bm = update.business_message
-        global business_connection_id
-        business_connection_id = bm.business_connection_id
+        global BUSINESS_CONNECTION_ID
+        BUSINESS_CONNECTION_ID = bm.business_connection_id
         print(f"bm: {bm}")
         if bm.document:
             print("document")
@@ -218,19 +218,18 @@ async def handle_all_updates(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 user_id = str(bm.chat.id)
                 name = bm.chat.full_name if hasattr(bm.chat, 'full_name') else "Unknown"
                 username = bm.chat.username or "unknown"
+                await bm.reply_text(
+                    "🤖*Thank you for submitting your article*🙏\n\n"
+                    "✅Kindly wait while your report is being prepared. I will notify you as soon as it is ready for download.",
+                    parse_mode="Markdown",
+                )
 
                 save_user_data(
                     user_id=user_id,
                     name=name,
                     username=username,
                     business_chat_id=bm.chat.id,
-                    business_connection_id=bm.business_connection_id
-
-                )
-                await bm.reply_text(
-                    "🤖*Thank you for submitting your article*🙏\n\n"
-                    "✅Kindly wait while your report is being prepared. I will notify you as soon as it is ready for download.",
-                    parse_mode="Markdown",
+                    # business_connection_id=bm.business_connection_id
                 )
 
                 # await context.bot.send_message(
@@ -500,7 +499,7 @@ async def receive_user(update: Update, context: ContextTypes.DEFAULT_TYPE, prefi
 
 
     await context.bot.send_message(
-        business_connection_id=business_connection_id,
+        business_connection_id=BUSINESS_CONNECTION_ID,
         chat_id=user_id,
         text=f"<b>🔰REPORT IS READY🔰</b>\n\n"
              f"Please, click on the button below and make the payment of <b>Rs {amount}/-</b> to download your report.",
@@ -594,7 +593,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode="HTML"
             )
             await context.bot.send_message(
-                business_connection_id=business_connection_id,
+                business_connection_id=BUSINESS_CONNECTION_ID,
                 chat_id=user_id,
                 text=f"*🔰JOIN & SHARE🔰*\n\n"
                      f"✅Please share and join our Telegram channel with your friends to stay updated "
