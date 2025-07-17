@@ -1,5 +1,5 @@
-aiogram==2.23.1
-flask
+aiogram==3.0.0 
+flask>=3.0.0
 requests~=2.32.3
 apscheduler
 python-dotenv~=1.0.1
