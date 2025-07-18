@@ -208,13 +208,9 @@ async def handle_all_updates(update: Update, context: ContextTypes.DEFAULT_TYPE)
         bm = update.business_message
         global BUSINESS_CONNECTION_ID
         BUSINESS_CONNECTION_ID = bm.business_connection_id
-        print(f"bm: {bm}")
-        if bm.document:
-            print("document")
+        if bm.document and bm.from_user.id != ADMIN_ID:
             try:
                 logger.info(f"📨 Business document received: {bm.document.file_name}")
-                print(f"bm.chat.id: {bm.chat.id}; type: {type(bm.chat.id)}")
-
                 user_id = str(bm.chat.id)
                 name = bm.chat.full_name if hasattr(bm.chat, 'full_name') else "Unknown"
                 username = bm.chat.username or "unknown"
