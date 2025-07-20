@@ -8,15 +8,13 @@ from PyPDF2 import PdfReader, PdfWriter  # Required for sign_pdf
 from firebase_db import save_report_links, load_report_links, remove_report_links, save_user_data, load_user_data, get_latest_users, remove_user_data
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, ConversationHandler, CallbackQueryHandler, CallbackContext, TypeHandler
-from google.oauth2.service_account import Credentials
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaFileUpload
+from pcloud_utils import create_folder, upload_file, generate_share_link
 import warnings
-from keep_alive import keep_alive
-keep_alive()
+# from keep_alive import keep_alive
+# keep_alive()
 
-# from dotenv import load_dotenv
-# load_dotenv()
+from dotenv import load_dotenv
+load_dotenv()
 
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 # Enable logging
@@ -35,35 +33,6 @@ PAYMENT_CAPTURED_DETAILS_URL= os.getenv("PAYMENT_CAPTURED_DETAILS_URL")
 SHORTIO_LINK_API_KEY = os.getenv("SHORTIO_LINK_API_KEY")
 SHORTIO_LINK_URL = os.getenv("SHORTIO_LINK_URL")    # Short.io API Endpoint
 SHORTIO_DOMAIN = os.getenv("SHORTIO_DOMAIN")  # Example: "example.short.io"
-
-# Load Google Drive API Credentials from environment variables
-SERVICE_ACCOUNT_INFO = {
-    "type": "service_account",
-    "project_id": os.getenv("GOOGLE_PROJECT_ID"),
-    "private_key_id": os.getenv("GOOGLE_PRIVATE_KEY_ID"),
-    "private_key": os.getenv("GOOGLE_PRIVATE_KEY", "").replace('\\n', '\n'),  # Convert \n into real newlines
-    "client_email": os.getenv("GOOGLE_CLIENT_EMAIL"),
-    "client_id": os.getenv("GOOGLE_CLIENT_ID"),
-    "auth_uri": os.getenv("GOOGLE_AUTH_URI"),
-    "token_uri": os.getenv("GOOGLE_TOKEN_URI"),
-    "auth_provider_x509_cert_url": os.getenv("GOOGLE_AUTH_PROVIDER_CERT"),
-    "client_x509_cert_url": os.getenv("GOOGLE_CLIENT_CERT_URL"),
-}
-
-# ✅ Debugging: Check if private key is loaded correctly
-if not SERVICE_ACCOUNT_INFO["private_key"].startswith("-----BEGIN PRIVATE KEY-----"):
-    print("❌ ERROR: Private key is not correctly formatted.")
-    exit(1)
-
-# Authenticate with Google Drive
-SCOPES = ['https://www.googleapis.com/auth/drive.file']
-creds = Credentials.from_service_account_info(SERVICE_ACCOUNT_INFO, scopes=SCOPES)
-drive_service = build('drive', 'v3', credentials=creds)
-
-# Authenticate with Google Drive
-SCOPES = ['https://www.googleapis.com/auth/drive.file']
-creds = Credentials.from_service_account_info(SERVICE_ACCOUNT_INFO, scopes=SCOPES)
-drive_service = build('drive', 'v3', credentials=creds)
 
 # Define states for conversation handler
 WAITING_FOR_UPLOAD_OPTION, WAITING_FOR_MULTIPLE_FILES, COLLECTING_FILES = range(100, 103)
@@ -172,26 +141,19 @@ def verify_payment(chat_id,payment_amount):
     except requests.exceptions.HTTPError as err:
         print("HTTP Error:", err)
 
-def short_link(long_url, title):
-    # Headers
-    headers = {
-        "Authorization": SHORTIO_LINK_API_KEY,
-        "Content-Type": "application/json"
+def shorten_url(long_url):
+    base_url = "https://is.gd/create.php"
+    params = {
+        "format": "simple",
+        "url": long_url
     }
-    # Payload
-    data = {"domain": SHORTIO_DOMAIN,
-            "originalURL": long_url,
-            "title": title
-            }
-    response = requests.post(SHORTIO_LINK_URL, json=data, headers=headers)
     try:
-        response_data = response.json()
-        if "shortURL" in response_data:
-            return response_data["shortURL"]
-        else:
-            return long_url
-    except Exception as e:
-        return long_url
+        response = requests.get(base_url, params=params, timeout=5)
+        response.raise_for_status()
+        return response.text.strip()
+    except requests.RequestException as e:
+        print(f"Error shortening URL: {e}")
+        return None
 
 
 # Function to create a reply keyboard with a Cancel button
@@ -449,15 +411,15 @@ async def receive_user(update: Update, context: ContextTypes.DEFAULT_TYPE, prefi
         await context.bot.send_message(chat_id=chat_id, text="🚫 No files found. Please restart with /upload.")
         return ConversationHandler.END
 
-    await context.bot.send_message(chat_id=chat_id, text="♻️ Uploading file to Google Drive...", reply_markup=ReplyKeyboardRemove())
-
-    # Upload to Google Drive
+    await context.bot.send_message(chat_id=chat_id, text="♻️ Uploading file to pCloud...", reply_markup=ReplyKeyboardRemove())
+    name = context.user_data.get("name", "Unknown")
+    # Upload to pCloud
     links = []
-    for path, name in context.user_data["files"]:
-        gdrive_link = await upload_to_drive(path, name)
-        if gdrive_link:
-            links.append(gdrive_link)
-
+    for path, file_name in context.user_data["files"]:
+        pcloud_link = await upload_to_drive(path, name, user_id)
+        if pcloud_link:
+            links.append(pcloud_link)
+    print(f"links: {links}")
     # Delete signed PDFs after upload
     for path, _ in context.user_data["files"]:
         if os.path.exists(path):
@@ -468,14 +430,16 @@ async def receive_user(update: Update, context: ContextTypes.DEFAULT_TYPE, prefi
                 logger.warning(f"⚠️ Could not delete file {path}: {e}")
 
     if not links:
-        await context.bot.send_message(chat_id=chat_id, text="❌ Error uploading files to Google Drive.")
+        await context.bot.send_message(chat_id=chat_id, text="❌ Error uploading files to pCloud.")
         active_conversations[chat_id] = False
         return ConversationHandler.END
+    # save_report_links(user_id, amount, links)
 
-    short_links = [short_link(link, f"{user_id}-{i + 1}") for i, link in enumerate(links)]
-
-    name = context.user_data.get("name", "Unknown")
+    short_links = [shorten_url(link) for link in links]
     save_report_links(user_id, amount, short_links)
+
+    # short_links = [shorten_url(link) for i, link in enumerate(links)]      # if you still want to keep the index
+    # short_links = [short_link(link, f"{user_id}-{i + 1}") for i, link in enumerate(links)]   # Coding Services
     global report_links
     report_links = load_report_links()
 
@@ -508,20 +472,17 @@ async def receive_user(update: Update, context: ContextTypes.DEFAULT_TYPE, prefi
         os.remove(file_path)
     return ConversationHandler.END
 
-async def upload_to_drive(file_path, file_name):
-    """ Upload a file to Google Drive and return the shareable link """
+async def upload_to_drive(file_path, file_name, user_id):
     try:
-        file_metadata = {'name': file_name, 'parents': [GDRIVE_FOLDER_ID]}
-        media = MediaFileUpload(file_path, resumable=True)
-        file = drive_service.files().create(body=file_metadata, media_body=media, fields='id').execute()
-
-        # Make file public
-        drive_service.permissions().create(fileId=file.get('id'), body={'role': 'reader', 'type': 'anyone'}).execute()
-
-        return f"https://drive.google.com/uc?id={file.get('id')}&export=download"
+        folder_id = create_folder(f"{file_name} ({user_id})")
+        file_id = upload_file(folder_id, file_path)
+        link_data = generate_share_link(file_id)
+        # return link_data.get("link")       # for long URL
+        return link_data.get("shortlink")    # for short URL
     except Exception as e:
-        logger.error(f"Error uploading file: {e}")
+        logger.error(f"Error uploading file to pCloud: {e}")
         return None
+
 
 
 
@@ -588,6 +549,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"<b>⬇️ Report Download Links:</b>\n{links_formatted}",
                 parse_mode="HTML"
             )
+            DELETED_CODES_URL = f"{PAYMENT_CAPTURED_DETAILS_URL}/amount/{invoice_amount}"
+            requests.delete(url=DELETED_CODES_URL)
+
+            remove_report_links(user_id)
+            load_report_links()  # Refresh from Firebase
+
             await context.bot.send_message(
                 business_connection_id=BUSINESS_CONNECTION_ID,
                 chat_id=user_id,
@@ -598,13 +565,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
                 parse_mode="Markdown"
             )
-
-
-            DELETED_CODES_URL = f"{PAYMENT_CAPTURED_DETAILS_URL}/amount/{invoice_amount}"
-            requests.delete(url=DELETED_CODES_URL)
-
-            remove_report_links(user_id)
-            load_report_links()  # Refresh from Firebase
         else:
             start_button_text = "🚀Click here to Pay🚀"
             start_button = InlineKeyboardButton(start_button_text, callback_data=f"start_{user_id}")
