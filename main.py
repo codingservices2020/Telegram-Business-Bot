@@ -477,8 +477,8 @@ async def upload_to_drive(file_path, file_name, user_id):
         folder_id = create_folder(f"{file_name} ({user_id})")
         file_id = upload_file(folder_id, file_path)
         link_data = generate_share_link(file_id)
-        # return link_data.get("link")       # for long URL
-        return link_data.get("shortlink")    # for short URL
+        return link_data.get("link")       # for long URL
+        # return link_data.get("shortlink")    # for short URL
     except Exception as e:
         logger.error(f"Error uploading file to pCloud: {e}")
         return None
@@ -780,3 +780,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
