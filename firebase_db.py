@@ -9,8 +9,8 @@ from dotenv import load_dotenv
 # Load environment variables
 load_dotenv()
 
-# DB_FILE_NAME = "testing_database"  # Define the firebase database file
-DB_FILE_NAME = "Reports_Download_links"  # Define the firebase database file
+DB_FILE_NAME = "testing_database"  # Define the firebase database file
+# DB_FILE_NAME = "Reports_Download_links"  # Define the firebase database file
 
 # Build the Firebase credentials dictionary dynamically
 firebase_config = {
@@ -35,13 +35,25 @@ firebase_admin.initialize_app(cred)
 db = firestore.client()
 
 
-def save_report_links(user_id, amount, links):
-    """Save user subscription to Firestore with email & mobile"""
+def save_report_links(user_id, amount, links, region="indian", paypal_order_id=None, paypal_approve_url=None):
+    """Save user subscription to Firestore (supports PayPal order ID for non-Indian users)"""
     doc_ref = db.collection(DB_FILE_NAME).document(str(user_id))
-    doc_ref.set({
+
+    data = {
         "amount": amount,
         "links": links,
-    })
+        "region": region,
+    }
+
+    # 🔥 Store PayPal order ID only for non-Indian users
+    if paypal_order_id:
+        data["paypal_order_id"] = paypal_order_id
+
+    if paypal_approve_url:
+        data["paypal_approve_url"] = paypal_approve_url
+
+    doc_ref.set(data)
+
 
 def load_report_links():
     """Load all subscriptions from Firestore, safely handling errors"""
@@ -51,6 +63,10 @@ def load_report_links():
             user.id: {
                 "amount": user.to_dict().get("amount", "Unknown"),
                 "links": user.to_dict().get("links", "Unknown"),
+                "region": user.to_dict().get("region", "Unknown"),
+                "paypal_order_id": user.to_dict().get("paypal_order_id"),  # 🔥 NEW
+                "paypal_approve_url": user.to_dict().get("paypal_approve_url"),
+
             }
             for user in users_ref
         }
@@ -74,7 +90,9 @@ def save_user_data(user_id, name, username, business_chat_id=None):
         "name": name,
         "username": username,
         "business_chat_id": business_chat_id,
+        # "business_connection_id": business_connection_id,
         "timestamp": datetime.utcnow().isoformat()  # 🔥 Add timestamp
+
     }
     doc_ref.set(data, merge=True)
 
@@ -89,6 +107,7 @@ def load_user_data():
                 "name": user.to_dict().get("name", "Unknown"),
                 "username": user.to_dict().get("username", "Unknown"),
                 "business_chat_id": user.to_dict().get("business_chat_id"),
+                # "business_connection_id": user.to_dict().get("business_connection_id"),
                 "timestamp": user.to_dict().get("timestamp")
             }
             for user in users_ref
