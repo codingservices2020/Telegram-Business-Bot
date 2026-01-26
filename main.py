@@ -1,20 +1,26 @@
 import os
 import json
 import logging
+# from locale import currency
+
 import requests
 import uuid
+import asyncio
 import fitz  # PyMuPDF
 from PyPDF2 import PdfReader, PdfWriter  # Required for sign_pdf
 from firebase_db import save_report_links, load_report_links, remove_report_links, save_user_data, load_user_data, get_latest_users, remove_user_data
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, ReplyKeyboardRemove
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, ConversationHandler, CallbackQueryHandler, CallbackContext, TypeHandler
-from pcloud_utils import create_folder, upload_file, generate_share_link
-import warnings
-from keep_alive import keep_alive
-keep_alive()
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, ConversationHandler, CallbackQueryHandler#, CallbackContext, TypeHandler
+from google_drive_files import upload_and_get_link
+from paypal import create_paypal_payment_link, capture_payment
 
-# from dotenv import load_dotenv
-# load_dotenv()
+
+import warnings
+# from keep_alive import keep_alive
+# keep_alive()
+
+from dotenv import load_dotenv
+load_dotenv()
 
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 # Enable logging
@@ -28,12 +34,26 @@ SIGN_TEXT_1 = os.getenv("SIGN_TEXT_1")
 URL = f'https://api.telegram.org/bot{TOKEN}/getUpdates'
 GDRIVE_FOLDER_ID = os.getenv("GDRIVE_FOLDER_ID")
 ADMIN_ID = int(os.getenv("ADMIN_ID"))
-PAYMENT_URL = os.getenv('PAYMENT_URL')
+RAZORPAY_PAYMENT_URL = os.getenv('RAZORPAY_PAYMENT_URL')
+PAYPAL_PAYMENT_URL = os.getenv('PAYPAL_PAYMENT_URL')
 PAYMENT_CAPTURED_DETAILS_URL= os.getenv("PAYMENT_CAPTURED_DETAILS_URL")
-SHORTIO_LINK_API_KEY = os.getenv("SHORTIO_LINK_API_KEY")
-SHORTIO_LINK_URL = os.getenv("SHORTIO_LINK_URL")    # Short.io API Endpoint
-SHORTIO_DOMAIN = os.getenv("SHORTIO_DOMAIN")  # Example: "example.short.io"
+PAYPAL_API_BASE = os.getenv('PAYPAL_API_BASE')
+PAYPAL_CLIENT_ID = os.getenv('PAYPAL_CLIENT_ID')
+PAYPAL_SECRET = os.getenv('PAYPAL_SECRET')
 
+# Load Google Drive API Credentials from environment variables
+SERVICE_ACCOUNT_INFO = {
+    "type": "service_account",
+    "project_id": os.getenv("GOOGLE_PROJECT_ID"),
+    "private_key_id": os.getenv("GOOGLE_PRIVATE_KEY_ID"),
+    "private_key": os.getenv("GOOGLE_PRIVATE_KEY", "").replace('\\n', '\n'),  # Convert \n into real newlines
+    "client_email": os.getenv("GOOGLE_CLIENT_EMAIL"),
+    "client_id": os.getenv("GOOGLE_CLIENT_ID"),
+    "auth_uri": os.getenv("GOOGLE_AUTH_URI"),
+    "token_uri": os.getenv("GOOGLE_TOKEN_URI"),
+    "auth_provider_x509_cert_url": os.getenv("GOOGLE_AUTH_PROVIDER_CERT"),
+    "client_x509_cert_url": os.getenv("GOOGLE_CLIENT_CERT_URL"),
+}
 # Define states for conversation handler
 WAITING_FOR_UPLOAD_OPTION, WAITING_FOR_MULTIPLE_FILES, COLLECTING_FILES = range(100, 103)
 WAITING_FOR_PAYMENT, WAITING_FOR_USER = range(103, 105)
@@ -41,6 +61,9 @@ WAITING_FOR_DELETE_ID = 105
 WAITING_FOR_SEARCH_INPUT = 106  # 🔍 New state for search
 WAITING_FOR_NAME = 107  # add this line
 WAITING_FOR_DELETE_USER_ID = 108  # for /show_users command
+WAITING_FOR_SIGN_CONFIRMATION = 109
+WAITING_FOR_REGION = 110  # Update the states to include region selection
+
 
 
 
@@ -80,21 +103,45 @@ def save_data():
     with open(DATA_FILE, "w") as f:
         json.dump(report_links, f, indent=4)
 
-def edit_pdf(input_pdf, output_pdf, output_pdf_name, selected_text):
+def edit_pdf(input_pdf, output_pdf, output_pdf_name, selected_text, do_sign):
     doc = fitz.open(input_pdf)
     page = doc[0]
 
-    hide_rect = fitz.Rect(30.0, 304.0, 600, 410)
-    page.draw_rect(hide_rect, color=(1, 1, 1), fill=(1, 1, 1))
+    # ================= VISUAL SIGNATURE (ONLY IF YES) =================
+    if do_sign:
+        # Hide original area
+        hide_rect = fitz.Rect(30.0, 304.0, 600, 410)
+        page.draw_rect(hide_rect, color=(1, 1, 1), fill=(1, 1, 1))
 
-    rect = fitz.Rect(36, 329, 600, 400)
-    page.insert_textbox(rect, selected_text, fontsize=23, fontname="helvetica-bold", color=(0, 0, 0), align=0)
+        # Big visual name/signature
+        rect = fitz.Rect(36, 329, 600, 400)
+        page.insert_textbox(
+            rect,
+            selected_text,
+            fontsize=23,
+            fontname="helvetica-bold",
+            color=(0, 0, 0),
+            align=0
+        )
 
-    page.insert_text((36, 383), output_pdf_name, fontsize=17, fontname="helvetica-bold", color=(0, 0, 0))
+        # File name text
+        page.insert_text(
+            (36, 383),
+            output_pdf_name,
+            fontsize=17,
+            fontname="helvetica-bold",
+            color=(0, 0, 0)
+        )
 
+    # ================= FOOTER TEXT (ALWAYS EXECUTE) =================
     if selected_text != SIGN_TEXT_1:
-        page.insert_text((402, 560), f"Digitally signed by {selected_text}", fontsize=8,
-                         fontname="times-italic", color=(1, 0, 0))
+        page.insert_text(
+            (402, 560),
+            f"Digitally signed by {selected_text}",
+            fontsize=8,
+            fontname="times-italic",
+            color=(1, 0, 0)
+        )
     else:
         rect = fitz.Rect(382, 680, 580, 740)
         page.draw_rect(rect, color=(1, 0, 0))
@@ -110,6 +157,7 @@ def edit_pdf(input_pdf, output_pdf, output_pdf_name, selected_text):
 
     doc.save(output_pdf)
     doc.close()
+
 
 
 def sign_pdf(pdf_file_path):
@@ -155,6 +203,51 @@ def shorten_url(long_url):
         print(f"Error shortening URL: {e}")
         return None
 
+
+def process_all_files(context, do_sign):
+    """Process all raw files with the given signing preference"""
+    raw_files = context.user_data.get("raw_files", [])
+    file_names = context.user_data.get("file_names", [])
+    processed_files = []
+
+    selected_text = os.getenv("SIGN_TEXT_1", "Default Signature Text")
+
+    for i, (raw_file_path, original_name) in enumerate(zip(raw_files, file_names)):
+        # Check if the file exists
+        if not os.path.exists(raw_file_path):
+            logger.error(f"File not found: {raw_file_path}")
+            continue
+
+        # Prepare filenames
+        file_base, _ = os.path.splitext(original_name)
+        edited_file_name = f"{file_base}{uuid.uuid4().hex[:1]}.pdf"
+        edited_file_path = f"downloads/{edited_file_name}"
+
+        # Edit the PDF
+        edit_pdf(
+            raw_file_path,
+            edited_file_path,
+            edited_file_name,
+            selected_text,
+            do_sign=do_sign
+        )
+
+        # Sign the edited PDF
+        signed_file_path = sign_pdf(edited_file_path)
+        signed_file_name = os.path.basename(signed_file_path)
+
+        processed_files.append((signed_file_path, signed_file_name))
+
+        # Clean up intermediate files
+        for path in [raw_file_path, edited_file_path]:
+            if os.path.exists(path):
+                os.remove(path)
+
+    # Clean up the raw files list since they've been processed
+    context.user_data.pop("raw_files", None)
+    context.user_data.pop("file_names", None)
+
+    return processed_files
 
 # Function to create a reply keyboard with a Cancel button
 def get_cancel_keyboard():
@@ -209,19 +302,69 @@ async def cancel_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("⬆️ Upload process cancelled. You can start over with /upload.")
     return ConversationHandler.END
 
+
 async def upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.chat_id != ADMIN_ID:
         await update.message.reply_text("🚫 You are not authorized to use this command.")
         return ConversationHandler.END
-    await update.message.reply_text("♻️ Upload Process has Started...", reply_markup=get_cancel_keyboard(),parse_mode="Markdown")
-    active_conversations[update.message.chat_id] = True
+
+    # Clear any old data from previous sessions
+    context.user_data.clear()
+
+    # Ask for region first
+    keyboard = [
+        [InlineKeyboardButton("🇮🇳 Indian", callback_data="region_indian")],
+        [InlineKeyboardButton("🌍 Non-Indian", callback_data="region_non_indian")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    await update.message.reply_text(
+        "🌍 *Select your region:*\n\n"
+        "1. 🇮🇳 Indian - Use Razorpay for payment\n"
+        "2. 🌍 Non-Indian - Use PayPal for payment",
+        reply_markup=reply_markup,
+        parse_mode="Markdown"
+    )
+
+    return WAITING_FOR_REGION
+
+
+# Add region selection handler
+async def handle_region_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    if query.data == "region_indian":
+        context.user_data["region"] = "indian"
+        context.user_data["payment_url"] = RAZORPAY_PAYMENT_URL
+        region_text = "🇮🇳 Indian (Razorpay)"
+    else:
+        context.user_data["region"] = "non_indian"
+        context.user_data["payment_url"] = PAYPAL_PAYMENT_URL
+        region_text = "🌍 Non-Indian (PayPal)"
+
+    cancel_markup = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🚫 Cancel", callback_data="cancel_upload")]
+    ])
+    await query.edit_message_text(f"✅ Region selected: {region_text}\n\n"
+                                  "♻️ Upload Process has Started...",
+                                  # reply_markup=cancel_markup,
+                                  parse_mode="Markdown")
+
+    # Now show file upload options
     keyboard = [
         [InlineKeyboardButton("📁 One File", callback_data="upload_1")],
         [InlineKeyboardButton("📂 Two Files", callback_data="upload_2")],
         [InlineKeyboardButton("📦 More than Two Files", callback_data="upload_more")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("How many files do you want to upload?", reply_markup=reply_markup)
+
+    await context.bot.send_message(
+        chat_id=query.message.chat.id,
+        text="How many files do you want to upload?",
+        reply_markup=reply_markup
+    )
+
     return WAITING_FOR_UPLOAD_OPTION
 
 # Handle the Cancel button
@@ -277,34 +420,22 @@ async def handle_multiple_files(update: Update, context: ContextTypes.DEFAULT_TY
     original_file_path = f"downloads/{document.file_name}"
     await file.download_to_drive(original_file_path)
 
-    # Step 2: Prepare filenames
-    file_base, _ = os.path.splitext(document.file_name)
-    edited_file_name = f"{file_base}{uuid.uuid4().hex[:1]}.pdf"
-    edited_file_path = f"downloads/{edited_file_name}"
+    # Store the raw file path instead of processing it immediately
+    context.user_data.setdefault("raw_files", []).append(original_file_path)
+    context.user_data.setdefault("file_names", []).append(document.file_name)
 
-    # Step 3: Edit the PDF using SIGN_TEXT_1 from .env
-    selected_text = os.getenv("SIGN_TEXT_1", "Default Signature Text")
-    edit_pdf(original_file_path, edited_file_path, edited_file_name, selected_text)
-
-    # Step 4: Sign the edited PDF
-    signed_file_path = sign_pdf(edited_file_path)
-    signed_file_name = os.path.basename(signed_file_path)
-
-    # Step 5: Store the final signed PDF path and name
-    context.user_data["files"].append((signed_file_path, signed_file_name))
-
-    # Step 6: Clean up intermediate files
-    for path in [original_file_path, edited_file_path]:
-        if os.path.exists(path):
-            os.remove(path)
-
+    if context.user_data["region"] == "indian":
+        currency = "Rs"
+    else:
+        currency = "$"
     # Step 7: Check if all files are received
-    if len(context.user_data["files"]) >= context.user_data["upload_limit"]:
-        await update.message.reply_text("✅ All files received. Now enter payment amount:")
+    if len(context.user_data.get("raw_files", [])) >= context.user_data["upload_limit"]:
+        await update.message.reply_text(f"✅ All files received. \n"
+                                        f"Now enter payment amount (in {currency}):")
         return WAITING_FOR_PAYMENT
 
     await update.message.reply_text(
-        f"📒 File *{document.file_name}* received and signed. Send next file...",
+        f"📒 File *{document.file_name}* received. Send next file...",
         parse_mode="Markdown"
     )
     return COLLECTING_FILES
@@ -361,126 +492,212 @@ async def receive_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return WAITING_FOR_NAME
 
 async def receive_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Receive name after amount"""
     name = update.message.text.strip()
-    active_conversations[update.message.chat_id] = True
     context.user_data["name"] = name
-    await update.message.reply_text("👤 Enter the User ID:")
-    return WAITING_FOR_USER
+
+    keyboard = [
+        [
+            InlineKeyboardButton("✅ Yes", callback_data="sign_yes"),
+            InlineKeyboardButton("❌ No", callback_data="sign_no"),
+        ]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    await update.message.reply_text(
+        "🖊️ *Do you want to Sign this report?*",
+        reply_markup=reply_markup,
+        parse_mode="Markdown"
+    )
+    return WAITING_FOR_SIGN_CONFIRMATION
+
+
+async def handle_sign_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    do_sign = (query.data == "sign_yes")  # True if "Yes", False if "No"
+    context.user_data["do_sign"] = do_sign
+
+    # DEBUGGING: Log the choice
+    logger.info(f"DEBUG: User chose {'YES' if do_sign else 'NO'} for signing")
+
+    await query.edit_message_text(
+        "✅ Report will be signed." if do_sign
+        else "❌ Report will NOT be signed."
+    )
+
+    # Process all files with the signing preference
+    try:
+        processed_files = process_all_files(context, do_sign)
+
+        if not processed_files:
+            await query.edit_message_text("❌ No files could be processed. Please restart with /upload.")
+            return ConversationHandler.END
+
+        context.user_data["files"] = processed_files
+        logger.info(f"DEBUG: Processed {len(processed_files)} files with do_sign={do_sign}")
+    except Exception as e:
+        logger.error(f"Error processing files: {e}")
+        await query.edit_message_text("❌ Error processing files. Please restart with /upload.")
+        return ConversationHandler.END
+
+    # 🔥 DIRECTLY CONTINUE (NO USER ID QUESTION)
+    return await receive_user(update, context)
+
 
 async def handle_user_suggestion(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
     _, uid, name = query.data.split('|')
+
     context.user_data["name"] = name
     context.user_data["user_id_from_button"] = uid
 
-    await query.edit_message_text(f"✅ Selected: {name} ({uid})")
+    keyboard = [
+        [
+            InlineKeyboardButton("✅ Yes", callback_data="sign_yes"),
+            InlineKeyboardButton("❌ No", callback_data="sign_no"),
+        ]
+    ]
 
-    # Call receive_user with user_id directly
-    return await receive_user(update, context, uid)
+    await query.edit_message_text(
+        f"👤 Selected: {name} ({uid})\n\n"
+        "🖊️ *Do you want to Sign this report?*",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode="Markdown"
+    )
+
+    return WAITING_FOR_SIGN_CONFIRMATION
 
 
-async def receive_user(update: Update, context: ContextTypes.DEFAULT_TYPE, prefilled_user_id=None):
-    global code
-
+async def receive_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
-    active_conversations[chat_id] = True
 
-    # Safely determine the user ID
-    if prefilled_user_id:
-        user_id_text = prefilled_user_id
-    elif update.message and update.message.text:
-        user_id_text = update.message.text.strip()
-    else:
-        user_id_text = context.user_data.get("user_id_from_button")
+    # 🔥 User ID ALWAYS comes from suggestion
+    user_id = context.user_data.get("user_id_from_button")
 
-    # Validate user ID
-    if not user_id_text or not user_id_text.isdigit() or not (100000000 <= int(user_id_text) <= 9999999999):
-        await context.bot.send_message(chat_id=chat_id, text="❌ Please enter a valid Telegram User ID (7–10 digits).")
-        return WAITING_FOR_USER
+    if not user_id:
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text="❌ User ID not found. Please restart with /upload."
+        )
+        return ConversationHandler.END
 
-    user_id = user_id_text
-    file_path = context.user_data.get("file_path")
-    file_name = context.user_data.get("file_name")
     amount = context.user_data.get("amount")
+    name = context.user_data.get("name", "Unknown")
+    region = context.user_data.get("region", "indian")
+    payment_url = context.user_data.get("payment_url", RAZORPAY_PAYMENT_URL)
 
     if "files" not in context.user_data or not context.user_data["files"]:
-        active_conversations[chat_id] = False
-        await context.bot.send_message(chat_id=chat_id, text="🚫 No files found. Please restart with /upload.")
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text="🚫 No files found. Please restart with /upload."
+        )
         return ConversationHandler.END
 
-    await context.bot.send_message(chat_id=chat_id, text="♻️ Uploading file to pCloud...", reply_markup=ReplyKeyboardRemove())
-    name = context.user_data.get("name", "Unknown")
-    # Upload to pCloud
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text="♻️ Uploading file to Google Drive...",
+        reply_markup=ReplyKeyboardRemove()
+    )
+
     links = []
-    for path, file_name in context.user_data["files"]:
-        pcloud_link = await upload_to_drive(path, name, user_id)
-        if pcloud_link:
-            links.append(pcloud_link)
-    print(f"links: {links}")
-    # Delete signed PDFs after upload
     for path, _ in context.user_data["files"]:
-        if os.path.exists(path):
-            try:
-                os.remove(path)
-                logger.info(f"🧹 Deleted signed file: {path}")
-            except Exception as e:
-                logger.warning(f"⚠️ Could not delete file {path}: {e}")
+        link = await upload_to_drive(path, name, user_id)
+        if link:
+            links.append(link)
 
     if not links:
-        await context.bot.send_message(chat_id=chat_id, text="❌ Error uploading files to pCloud.")
-        active_conversations[chat_id] = False
+        await context.bot.send_message(chat_id=chat_id, text="❌ Upload failed.")
         return ConversationHandler.END
-    # save_report_links(user_id, amount, links)
 
     short_links = [shorten_url(link) for link in links]
-    save_report_links(user_id, amount, short_links)
+    save_report_links(user_id, amount, short_links, region)  # Update this function to store region
 
-    # short_links = [shorten_url(link) for i, link in enumerate(links)]      # if you still want to keep the index
-    # short_links = [short_link(link, f"{user_id}-{i + 1}") for i, link in enumerate(links)]   # Coding Services
     global report_links
     report_links = load_report_links()
 
-    links_formatted = "\n".join([f"📥 File {i + 1}: {link}" for i, link in enumerate(report_links[user_id]["links"])])
+    links_formatted = "\n".join(
+        [f"📥 File {i + 1}: {link}" for i, link in enumerate(report_links[user_id]["links"])]
+    )
 
-    await context.bot.send_message(chat_id=chat_id,
-        text=f"<b>🔰REPORT UPLOADED SUCCESSFULLY!🔰</b>\n\n"
-             f"👤 <b>Name:</b> <a href='tg://user?id={user_id}'>{name}</a>\n"
-             f"💰 <b>Amount:</b> Rs {amount}/-\n\n"
-             f"<b>⬇️ Report Download Links:</b>\n{links_formatted}",
+    if region == "indian":
+        payment_amount = f"Rs {amount}/-"
+    else:
+        payment_amount = f"${amount}"
+
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=(
+            f"<b>🔰REPORT UPLOADED SUCCESSFULLY!🔰</b>\n\n"
+            f"👤 <b>Name:</b> <a href='tg://user?id={user_id}'>{name}</a>\n"
+            f"💰 <b>Amount:</b> {payment_amount}\n\n"
+            f"<b>⬇️ Report Download Links:</b>\n{links_formatted}"
+        ),
         parse_mode="HTML"
     )
 
-    start_button_text = "🚀Click here to Proceed🚀"
-    start_button = InlineKeyboardButton(start_button_text, callback_data=f"start_{user_id}")
-    reply_markup = InlineKeyboardMarkup([[start_button]])
+    # Get the payment URL based on region
+    if region == "non_indian":
+        order_id, approve_url = create_paypal_payment_link(amount, user_id)
 
+        # store PayPal order id for later verification
+        report_links[user_id]["paypal_order_id"] = order_id
+        report_links[user_id]["paypal_approve_url"] = approve_url
+
+        save_report_links(
+            user_id,
+            amount,
+            short_links,
+            region,
+            paypal_order_id=order_id,
+            paypal_approve_url=approve_url
+        )
+
+        payment_button = InlineKeyboardButton(
+            "👉 Click here to proceed",
+            callback_data=f"start_{user_id}"
+        )
+
+    else:
+        # 🔥 KEEP INDIAN FLOW EXACTLY AS-IS
+        payment_button = InlineKeyboardButton(
+            f"🚀Click here to Pay {payment_amount}🚀",
+            callback_data=f"start_{user_id}"
+        )
+
+    reply_markup = InlineKeyboardMarkup([[payment_button]])
 
     await context.bot.send_message(
         business_connection_id=BUSINESS_CONNECTION_ID,
         chat_id=user_id,
         text=f"<b>🔰REPORT IS READY🔰</b>\n\n"
-             f"Please, click on the button below and make the payment of <b>Rs {amount}/-</b> to download your report.",
+             f"Please, click on the button below and make the payment of"
+             f" <b>{payment_amount}</b> to download your report.",
         reply_markup=reply_markup,
         parse_mode="HTML"
     )
     remove_user_data(user_id)
-
-    if file_path and os.path.exists(file_path):
-        os.remove(file_path)
     return ConversationHandler.END
 
-async def upload_to_drive(file_path, file_name, user_id):
+async def upload_to_drive(file_path, user_name, user_id):
+    """
+    Upload file to Google Drive and return direct download link
+    """
     try:
-        folder_id = create_folder(f"{file_name} ({user_id})")
-        file_id = upload_file(folder_id, file_path)
-        link_data = generate_share_link(file_id)
-        return link_data.get("link")       # for long URL
-        # return link_data.get("shortlink")    # for short URL
+        folder_name = f"{user_name} ({user_id})"
+
+        # One-step upload + link
+        drive_link = upload_and_get_link(
+            file_path=file_path,
+            folder_name=folder_name
+        )
+
+        return drive_link
+
     except Exception as e:
-        logger.error(f"Error uploading file to pCloud: {e}")
+        logger.error(f"❌ Error uploading file to Google Drive: {e}")
         return None
 
 
@@ -500,13 +717,51 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = str(chat_id)
         message = update.message  # Use the message from the regular update
 
-
-    #check is there any user's report
+    # Check if there's any user's report
     if user_id in report_links:
-        payment_button_text = f"🚀Make Payment of Rs {report_links[user_id]['amount']}/-🚀"
+        # Get region from report_links (you'll need to update the save_report_links function)
+        region = report_links[user_id].get('region', 'indian')
+        amount = report_links[user_id].get('amount')
+        if region == "indian":
+            payment_amount = f"Rs {amount}/-"
+        else:
+            payment_amount = f"${amount}"
+        if region == "indian":
+            payment_url = RAZORPAY_PAYMENT_URL
+            payment_method = "Razorpay"
+
+            payment_button = InlineKeyboardButton(
+                f"🚀Make Payment of {payment_amount}🚀",
+                url=payment_url
+            )
+
+        else:
+            payment_method = "PayPal"
+
+            order_id = report_links[user_id].get("paypal_order_id")
+            approve_url = report_links[user_id].get("paypal_approve_url")
+
+            # 🔥 Create PayPal order ONLY if it doesn't exist
+            if not order_id or not approve_url:
+                order_id, approve_url = create_paypal_payment_link(amount, user_id)
+
+                report_links[user_id]["paypal_order_id"] = order_id
+                report_links[user_id]["paypal_approve_url"] = approve_url
+
+                save_report_links(
+                    user_id,
+                    amount,
+                    report_links[user_id]["links"],
+                    region,
+                    paypal_order_id=order_id
+                )
+
         download_button_text = "📥 Download Report"
 
-        payment_button = InlineKeyboardButton(payment_button_text, url=PAYMENT_URL)
+        payment_button = InlineKeyboardButton(
+            f"🚀Make Payment of {payment_amount}🚀",
+            url=approve_url
+        )
         download_button = InlineKeyboardButton(download_button_text, callback_data=f"download_{user_id}")
         keyboard = [[payment_button], [download_button]]
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -514,10 +769,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await message.reply_text(
             f"*🔰Report Downloader Bot🔰*"
             f"\n\nTo download your report, follow these two steps:"
-            f"\n 1️⃣ First click on the button below and make the payment."
+            f"\n 1️⃣ First click on the button below and make the payment of {payment_amount}."
             f"\n 2️⃣ After payment download the report."
             f"\n\n Your User ID: `{user_id}` (tap to copy)\n\n"
-            f"✅ Use this User ID on Razorpay Payment Gateway.",
+            f"✅ Use this User ID on {payment_method} Payment Gateway.",
             reply_markup=reply_markup,
             parse_mode="Markdown"
         )
@@ -538,8 +793,26 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     report_links = load_report_links() # Refresh from Firebase
     if user_id in report_links:
         invoice_amount = int(report_links[user_id]['amount'])
-        if verify_payment(user_id, invoice_amount):
+        region = report_links[user_id].get("region", "indian")
 
+        if region == "indian":
+            paid = verify_payment(user_id, invoice_amount)
+
+        else:
+            order_id = report_links[user_id].get("paypal_order_id")
+            if not order_id:
+                await query.edit_message_text("❌ PayPal order not found. Please contact Admin.")
+                return
+            payment_details = capture_payment(order_id)
+
+            paid = (
+                    payment_details
+                    and payment_details.get("status") == "COMPLETED"
+                    and payment_details.get("user_id") == str(user_id)
+                    and float(payment_details.get("paid_amount")) == float(invoice_amount)
+            )
+
+        if paid:
             links_formatted = "\n".join(
                 [f"📥 File {i + 1}: {link}" for i, link in enumerate(report_links[user_id]["links"])])
             await query.edit_message_text(
@@ -684,7 +957,7 @@ Commands available:
 """
     )
 
-def main():
+async def main():
     """ Main function to start the bot """
     application = Application.builder().token(TOKEN).build()
 
@@ -701,6 +974,10 @@ def main():
     conv_handler_upload = ConversationHandler(
         entry_points=[CommandHandler("upload", upload)],
         states={
+            WAITING_FOR_REGION: [
+                CallbackQueryHandler(handle_region_selection, pattern="^region_"),
+                MessageHandler(filters.Text([CANCEL_BUTTON]), handle_cancel),
+            ],
             WAITING_FOR_UPLOAD_OPTION: [
                 CallbackQueryHandler(upload_option_handler),
                 MessageHandler(filters.Text([CANCEL_BUTTON]), handle_cancel),  # Handle Cancel button
@@ -720,6 +997,10 @@ def main():
             WAITING_FOR_NAME: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, receive_name),
                 CallbackQueryHandler(handle_user_suggestion, pattern=r'^user_select\|'),
+                MessageHandler(filters.Text([CANCEL_BUTTON]), handle_cancel),
+            ],
+            WAITING_FOR_SIGN_CONFIRMATION: [
+                CallbackQueryHandler(handle_sign_confirmation, pattern="^sign_"),
                 MessageHandler(filters.Text([CANCEL_BUTTON]), handle_cancel),
             ],
             WAITING_FOR_USER: [
@@ -770,14 +1051,20 @@ def main():
 
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
+    # CallbackQueryHandler(handle_cancel, pattern="^cancel_upload$")
     application.add_handler(conv_handler_upload)
     application.add_handler(conv_handler_delete)
     application.add_handler(conv_handler_show_users)
     application.add_handler(CallbackQueryHandler(button_handler))
 
 
-    application.run_polling()
+    # application.run_polling()
+
+    await application.initialize()
+    await application.start()
+    await application.updater.start_polling()  # 🔥 KEEP RUNNING
+
+    await asyncio.Event().wait()
 
 if __name__ == "__main__":
-    main()
-
+    asyncio.run(main())
