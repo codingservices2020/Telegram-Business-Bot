@@ -90,7 +90,7 @@ def capture_payment(order_id):
         response.raise_for_status()
         payment_result = response.json()
         status = payment_result['purchase_units'][0]['payments']['captures'][0]['status']  # shows "COMPLETED" if paid successfully
-        name = payment_result['purchase_units'][0]['shipping']['name']['full_name']
+        name = payment_result['payer']['name']['given_name']+" "+payment_result['payer']['name']['surname']
         email = payment_result['payer']['email_address']
         paid_amount = payment_result['purchase_units'][0]['payments']['captures'][0]['amount']['value']
         currency = payment_result['purchase_units'][0]['payments']['captures'][0]['amount']['currency_code']
@@ -113,6 +113,3 @@ def capture_payment(order_id):
         return data
     except requests.exceptions.HTTPError as e:
         print(f"Failed to capture payment: {e.response.json()}")
-
-
-
