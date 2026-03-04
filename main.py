@@ -13,12 +13,14 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKe
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, ConversationHandler, CallbackQueryHandler#, CallbackContext, TypeHandler
 from google_drive_files import upload_and_get_link
 from paypal import create_paypal_payment_link, capture_payment
-import warnings
-from keep_alive import keep_alive
-keep_alive()
 
-# from dotenv import load_dotenv
-# load_dotenv()
+
+import warnings
+# from keep_alive import keep_alive
+# keep_alive()
+
+from dotenv import load_dotenv
+load_dotenv()
 
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 # Enable logging
@@ -638,11 +640,11 @@ async def receive_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Get the payment URL based on region
     if region == "non_indian":
-        order_id, approve_url = create_paypal_payment_link(amount, user_id)
+        order_id, paypal_url = create_paypal_payment_link(amount, user_id)
 
         # store PayPal order id for later verification
         report_links[user_id]["paypal_order_id"] = order_id
-        report_links[user_id]["paypal_approve_url"] = approve_url
+        report_links[user_id]["paypal_approve_url"] = paypal_url
 
         save_report_links(
             user_id,
@@ -650,7 +652,7 @@ async def receive_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
             short_links,
             region,
             paypal_order_id=order_id,
-            paypal_approve_url=approve_url
+            paypal_approve_url=paypal_url
         )
 
         payment_button = InlineKeyboardButton(
@@ -722,29 +724,19 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         amount = report_links[user_id].get('amount')
         if region == "indian":
             payment_amount = f"Rs {amount}/-"
+            razorpay_url = RAZORPAY_PAYMENT_URL
+            payment_method = "Razorpay"
         else:
             payment_amount = f"${amount}"
-        if region == "indian":
-            payment_url = RAZORPAY_PAYMENT_URL
-            payment_method = "Razorpay"
-
-            payment_button = InlineKeyboardButton(
-                f"🚀Make Payment of {payment_amount}🚀",
-                url=payment_url
-            )
-
-        else:
             payment_method = "PayPal"
-
             order_id = report_links[user_id].get("paypal_order_id")
-            approve_url = report_links[user_id].get("paypal_approve_url")
-
+            paypal_url = report_links[user_id].get("paypal_approve_url")
             # 🔥 Create PayPal order ONLY if it doesn't exist
-            if not order_id or not approve_url:
-                order_id, approve_url = create_paypal_payment_link(amount, user_id)
+            if not order_id or not paypal_url:
+                order_id, paypal_url = create_paypal_payment_link(amount, user_id)
 
                 report_links[user_id]["paypal_order_id"] = order_id
-                report_links[user_id]["paypal_approve_url"] = approve_url
+                report_links[user_id]["paypal_approve_url"] = paypal_url
 
                 save_report_links(
                     user_id,
@@ -753,12 +745,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     region,
                     paypal_order_id=order_id
                 )
-
         download_button_text = "📥 Download Report"
-
         payment_button = InlineKeyboardButton(
             f"🚀Make Payment of {payment_amount}🚀",
-            url=approve_url
+            url=razorpay_url if region == "indian" else paypal_url
         )
         download_button = InlineKeyboardButton(download_button_text, callback_data=f"download_{user_id}")
         keyboard = [[payment_button], [download_button]]
@@ -1066,4 +1056,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
