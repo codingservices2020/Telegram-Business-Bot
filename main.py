@@ -16,11 +16,11 @@ from paypal import create_paypal_payment_link, capture_payment
 
 
 import warnings
-# from keep_alive import keep_alive
-# keep_alive()
+from keep_alive import keep_alive
+keep_alive()
 
-from dotenv import load_dotenv
-load_dotenv()
+# from dotenv import load_dotenv
+# load_dotenv()
 
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 # Enable logging
@@ -1056,3 +1056,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
