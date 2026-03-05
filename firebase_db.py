@@ -9,8 +9,8 @@ from dotenv import load_dotenv
 # Load environment variables
 load_dotenv()
 
-DB_FILE_NAME = "testing_database"  # Define the firebase database file
-# DB_FILE_NAME = "Reports_Download_links"  # Define the firebase database file
+# DB_FILE_NAME = "testing_database"  # Define the firebase database file
+DB_FILE_NAME = "Reports_Download_links"  # Define the firebase database file
 
 # Build the Firebase credentials dictionary dynamically
 firebase_config = {
@@ -132,3 +132,4 @@ def get_latest_users(limit=4):
     except Exception as e:
         print(f"Firestore Error: {e}")
         return []
+
