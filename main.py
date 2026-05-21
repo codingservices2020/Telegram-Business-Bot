@@ -1066,21 +1066,21 @@ async def main():
 
     # application.run_polling()
 
-    # await application.initialize()
-    # await application.start()
-    # await application.updater.start_polling()  # 🔥 KEEP RUNNING
-    # await asyncio.Event().wait()
-
-    # delete old webhook
-    await application.bot.delete_webhook(
-        drop_pending_updates=True
-    )
     await application.initialize()
     await application.start()
-    await application.updater.start_polling(
-        drop_pending_updates=True
-    )
+    await application.updater.start_polling()  # 🔥 KEEP RUNNING
     await asyncio.Event().wait()
+
+    # # delete old webhook
+    # await application.bot.delete_webhook(
+    #     drop_pending_updates=True
+    # )
+    # await application.initialize()
+    # await application.start()
+    # await application.updater.start_polling(
+    #     drop_pending_updates=True
+    # )
+    # await asyncio.Event().wait()
 
 if __name__ == "__main__":
     asyncio.run(main())
