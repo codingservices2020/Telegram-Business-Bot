@@ -16,11 +16,11 @@ from paypal import create_paypal_payment_link, capture_payment
 
 
 import warnings
-from keep_alive import keep_alive
-keep_alive()
+# from keep_alive import keep_alive
+# keep_alive()
 
-# from dotenv import load_dotenv
-# load_dotenv()
+from dotenv import load_dotenv
+load_dotenv()
 
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 # Enable logging
@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 # Load environment variables
 TOKEN = os.getenv("TOKEN")
 SHORTIO_LINK_API_KEY = os.getenv("SHORTIO_LINK_API_KEY")
-SHORTIO_DOMAIN = os.getenv("SHORTIO_DOMAIN")  
+SHORTIO_DOMAIN = os.getenv("SHORTIO_DOMAIN")
 PDF_PASSWORD = os.getenv("PDF_PASSWORD")
 SIGN_TEXT_1 = os.getenv("SIGN_TEXT_1")
 URL = f'https://api.telegram.org/bot{TOKEN}/getUpdates'
@@ -201,7 +201,7 @@ def shorten_url(long_url):
     # Payload
     data = {"domain": SHORTIO_DOMAIN,
             "originalURL": long_url,
-            "title": "Reports Links"
+            "title": "Test Link"
             }
     try:
         response = requests.post(BASE_URL, json=data, headers=headers, timeout=5)
@@ -265,41 +265,116 @@ def get_start_keyboard():
     return ReplyKeyboardMarkup([[START_BUTTON]], resize_keyboard=True, one_time_keyboard=True)
 
 
-async def handle_all_updates(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.business_message and update.business_message.document:
-        bm = update.business_message
-        global BUSINESS_CONNECTION_ID
-        BUSINESS_CONNECTION_ID = bm.business_connection_id
-        if bm.document and bm.from_user.id != ADMIN_ID:
-            try:
-                logger.info(f"📨 Business document received: {bm.document.file_name}")
-                user_id = str(bm.chat.id)
-                name = bm.chat.full_name if hasattr(bm.chat, 'full_name') else "Unknown"
-                username = bm.chat.username or "unknown"
-                await bm.reply_text(
-                    "🤖*Thank you for submitting your article*🙏\n\n"
-                    "✅Kindly wait while your report is being prepared. I will notify you as soon as it is ready for download.",
-                    parse_mode="Markdown",
-                )
+# async def handle_all_updates(update: Update, context: ContextTypes.DEFAULT_TYPE):
+#     if update.business_message and update.business_message.document:
+#         bm = update.business_message
+#         global BUSINESS_CONNECTION_ID
+#         BUSINESS_CONNECTION_ID = bm.business_connection_id
+#         if bm.document and bm.from_user.id != ADMIN_ID:
+#             try:
+#                 logger.info(f"📨 Business document received: {bm.document.file_name}")
+#                 user_id = str(bm.chat.id)
+#                 name = bm.chat.full_name if hasattr(bm.chat, 'full_name') else "Unknown"
+#                 username = bm.chat.username or "unknown"
+#                 await bm.reply_text(
+#                     "🤖*Thank you for submitting your article*🙏\n\n"
+#                     "✅Kindly wait while your report is being prepared. I will notify you as soon as it is ready for download.",
+#                     parse_mode="Markdown",
+#                 )
+#
+#                 save_user_data(
+#                     user_id=user_id,
+#                     name=name,
+#                     username=username,
+#                     business_chat_id=bm.chat.id,
+#                     # business_connection_id=bm.business_connection_id
+#                 )
+#
+#                 # await context.bot.send_message(
+#                 #     business_connection_id=bm.business_connection_id,
+#                 #     chat_id=bm.chat.id,
+#                 #     text=f"🤖*Thank you for submitting your article*🙏\n\n"
+#                 #          f"✅Kindly wait while your report is being prepared. I will notify you as soon as it is ready for download.",
+#                 #     parse_mode="Markdown",
+#                 # )
+#             except Exception as e:
+#                 logger.error(f"Error replying to document upload: {e}")
+#             return
 
-                save_user_data(
-                    user_id=user_id,
-                    name=name,
-                    username=username,
-                    business_chat_id=bm.chat.id,
-                    # business_connection_id=bm.business_connection_id
-                )
+async def handle_all_updates(
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE
+):
 
-                # await context.bot.send_message(
-                #     business_connection_id=bm.business_connection_id,
-                #     chat_id=bm.chat.id,
-                #     text=f"🤖*Thank you for submitting your article*🙏\n\n"
-                #          f"✅Kindly wait while your report is being prepared. I will notify you as soon as it is ready for download.",
-                #     parse_mode="Markdown",
-                # )
-            except Exception as e:
-                logger.error(f"Error replying to document upload: {e}")
-            return
+    bm = update.business_message
+
+    # Ignore invalid updates
+    if (
+            not bm
+            or not bm.document
+            or bm.from_user.id == ADMIN_ID
+    ):
+        return
+
+    file_name = (
+        bm.document.file_name or ""
+    ).lower()
+
+    # Allow only PDF / Word files
+    if not file_name.endswith(
+            (".pdf", ".doc", ".docx")
+    ):
+        logger.info(
+            f"Ignored file: {file_name}"
+        )
+        return
+
+    try:
+
+        logger.info(
+            f"📨 Business file: "
+            f"{bm.document.file_name}"
+        )
+
+        user_id = str(bm.chat.id)
+
+        # Save business connection
+        context.application.bot_data[
+            user_id
+        ] = bm.business_connection_id
+
+        # Auto reply
+        await bm.reply_text(
+            "🤖*Thank you for submitting your article*🙏\n\n"
+            "✅Kindly wait while your report is being prepared. "
+            "I will notify you as soon as it is ready for download.",
+            parse_mode="Markdown"
+        )
+
+        # Save user
+        save_user_data(
+            user_id=user_id,
+            name=getattr(
+                bm.chat,
+                "full_name",
+                "Unknown"
+            ),
+            username=(
+                bm.chat.username
+                or "unknown"
+            ),
+            business_chat_id=bm.chat.id
+        )
+
+        logger.info(
+            f"Saved user {user_id}"
+        )
+
+    except Exception as e:
+
+        logger.error(
+            f"Business reply error: {e}"
+        )
 
 
 # Add a new function to handle cancellation of the upload process
@@ -688,7 +763,10 @@ async def receive_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply_markup = InlineKeyboardMarkup([[payment_button]])
 
     await context.bot.send_message(
-        business_connection_id=BUSINESS_CONNECTION_ID,
+        business_connection_id=
+        context.application.bot_data.get(
+            str(user_id)
+        ),
         chat_id=user_id,
         text=f"<b>🔰REPORT IS READY🔰</b>\n\n"
              f"Please, click on the button below and make the payment of"
@@ -1069,18 +1147,8 @@ async def main():
     await application.initialize()
     await application.start()
     await application.updater.start_polling()  # 🔥 KEEP RUNNING
-    await asyncio.Event().wait()
 
-    # # delete old webhook
-    # await application.bot.delete_webhook(
-    #     drop_pending_updates=True
-    # )
-    # await application.initialize()
-    # await application.start()
-    # await application.updater.start_polling(
-    #     drop_pending_updates=True
-    # )
-    # await asyncio.Event().wait()
+    await asyncio.Event().wait()
 
 if __name__ == "__main__":
     asyncio.run(main())
