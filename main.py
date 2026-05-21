@@ -201,7 +201,7 @@ def shorten_url(long_url):
     # Payload
     data = {"domain": SHORTIO_DOMAIN,
             "originalURL": long_url,
-            "title": "Test Link"
+            "title": "Reports Links"
             }
     try:
         response = requests.post(BASE_URL, json=data, headers=headers, timeout=5)
