@@ -16,11 +16,11 @@ from paypal import create_paypal_payment_link, capture_payment
 
 
 import warnings
-from keep_alive import keep_alive
-keep_alive()
+# from keep_alive import keep_alive
+# keep_alive()
 
-# from dotenv import load_dotenv
-# load_dotenv()
+from dotenv import load_dotenv
+load_dotenv()
 
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 # Enable logging
@@ -29,6 +29,8 @@ logger = logging.getLogger(__name__)
 
 # Load environment variables
 TOKEN = os.getenv("TOKEN")
+SHORTIO_LINK_API_KEY = os.getenv("SHORTIO_LINK_API_KEY")
+SHORTIO_DOMAIN = os.getenv("SHORTIO_DOMAIN")  
 PDF_PASSWORD = os.getenv("PDF_PASSWORD")
 SIGN_TEXT_1 = os.getenv("SIGN_TEXT_1")
 URL = f'https://api.telegram.org/bot{TOKEN}/getUpdates'
@@ -63,6 +65,7 @@ WAITING_FOR_NAME = 107  # add this line
 WAITING_FOR_DELETE_USER_ID = 108  # for /show_users command
 WAITING_FOR_SIGN_CONFIRMATION = 109
 WAITING_FOR_REGION = 110  # Update the states to include region selection
+
 
 
 
@@ -189,18 +192,23 @@ def verify_payment(chat_id,payment_amount):
         print("HTTP Error:", err)
 
 def shorten_url(long_url):
-    base_url = "https://is.gd/create.php"
-    params = {
-        "format": "simple",
-        "url": long_url
+    BASE_URL="https://api.short.io/links/"     # Short.io API Endpoint
+    # Headers
+    headers = {
+        "Authorization": SHORTIO_LINK_API_KEY,
+        "Content-Type": "application/json"
     }
+    # Payload
+    data = {"domain": SHORTIO_DOMAIN,
+            "originalURL": long_url,
+            "title": "Test Link"
+            }
     try:
-        response = requests.get(base_url, params=params, timeout=5)
-        response.raise_for_status()
-        return response.text.strip()
-    except requests.RequestException as e:
+        response = requests.post(BASE_URL, json=data, headers=headers, timeout=5)
+        return response.json()["shortURL"]
+    except Exception as e:
         print(f"Error shortening URL: {e}")
-        return None
+        return long_url
 
 
 def process_all_files(context, do_sign):
@@ -611,7 +619,18 @@ async def receive_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(chat_id=chat_id, text="❌ Upload failed.")
         return ConversationHandler.END
 
-    short_links = [shorten_url(link) for link in links]
+    # short_links =
+    short_links = []
+
+    for link in links:
+        short = shorten_url(link)
+
+        if short and not short.lower().startswith("error"):
+            short_links.append(short)
+        else:
+            print(f"URL shortener failed: {short}")
+            short_links.append(link)  # use original Google Drive link
+
     save_report_links(user_id, amount, short_links, region)  # Update this function to store region
 
     global report_links
