@@ -19,8 +19,8 @@ import warnings
 from keep_alive import keep_alive
 keep_alive()
 
-from dotenv import load_dotenv
-load_dotenv()
+# from dotenv import load_dotenv
+# load_dotenv()
 
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 # Enable logging to both console and a file
