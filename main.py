@@ -19,8 +19,8 @@ import warnings
 from keep_alive import keep_alive
 keep_alive()
 
-# from dotenv import load_dotenv
-# load_dotenv()
+from dotenv import load_dotenv
+load_dotenv()
 
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 # Enable logging
@@ -275,11 +275,9 @@ async def handle_all_updates(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 name = bm.chat.full_name if hasattr(bm.chat, 'full_name') else "Unknown"
                 username = bm.chat.username or "unknown"
 
-                await context.bot.send_message(
-                    business_connection_id=bm.business_connection_id,
-                    chat_id=bm.chat.id,
-                    text=f"🤖*Thank you for submitting your article*🙏\n\n"
-                         f"✅Kindly wait while your report is being prepared. I will notify you as soon as it is ready for download.",
+                await bm.reply_text(
+                    "🤖*Thank you for submitting your article*🙏\n\n"
+                    "✅Kindly wait while your report is being prepared. I will notify you as soon as it is ready for download.",
                     parse_mode="Markdown",
                 )
 
@@ -1083,30 +1081,7 @@ async def main():
         drop_pending_updates=True
     )
     await application.start()
-    await application.updater.start_polling(
-        allowed_updates=[
-            "message",
-            "edited_message",
-            "channel_post",
-            "edited_channel_post",
-            "inline_query",
-            "chosen_inline_result",
-            "callback_query",
-            "shipping_query",
-            "pre_checkout_query",
-            "poll",
-            "poll_answer",
-            "my_chat_member",
-            "chat_member",
-            "chat_join_request",
-            "chat_boost",
-            "removed_chat_boost",
-            "business_connection",
-            "business_message",
-            "edited_business_message",
-            "deleted_business_messages"
-        ]
-    )  # 🔥 KEEP RUNNING
+    await application.updater.start_polling()  # 🔥 KEEP RUNNING
 
     await asyncio.Event().wait()
 
