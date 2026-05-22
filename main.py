@@ -265,116 +265,36 @@ def get_start_keyboard():
     return ReplyKeyboardMarkup([[START_BUTTON]], resize_keyboard=True, one_time_keyboard=True)
 
 
-# async def handle_all_updates(update: Update, context: ContextTypes.DEFAULT_TYPE):
-#     if update.business_message and update.business_message.document:
-#         bm = update.business_message
-#         global BUSINESS_CONNECTION_ID
-#         BUSINESS_CONNECTION_ID = bm.business_connection_id
-#         if bm.document and bm.from_user.id != ADMIN_ID:
-#             try:
-#                 logger.info(f"📨 Business document received: {bm.document.file_name}")
-#                 user_id = str(bm.chat.id)
-#                 name = bm.chat.full_name if hasattr(bm.chat, 'full_name') else "Unknown"
-#                 username = bm.chat.username or "unknown"
-#                 await bm.reply_text(
-#                     "🤖*Thank you for submitting your article*🙏\n\n"
-#                     "✅Kindly wait while your report is being prepared. I will notify you as soon as it is ready for download.",
-#                     parse_mode="Markdown",
-#                 )
-#
-#                 save_user_data(
-#                     user_id=user_id,
-#                     name=name,
-#                     username=username,
-#                     business_chat_id=bm.chat.id,
-#                     # business_connection_id=bm.business_connection_id
-#                 )
-#
-#                 # await context.bot.send_message(
-#                 #     business_connection_id=bm.business_connection_id,
-#                 #     chat_id=bm.chat.id,
-#                 #     text=f"🤖*Thank you for submitting your article*🙏\n\n"
-#                 #          f"✅Kindly wait while your report is being prepared. I will notify you as soon as it is ready for download.",
-#                 #     parse_mode="Markdown",
-#                 # )
-#             except Exception as e:
-#                 logger.error(f"Error replying to document upload: {e}")
-#             return
+async def handle_all_updates(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.business_message and update.business_message.document:
+        bm = update.business_message
+        if bm.document and bm.from_user.id != ADMIN_ID:
+            try:
+                logger.info(f"📨 Business document received: {bm.document.file_name}")
+                user_id = str(bm.chat.id)
+                name = bm.chat.full_name if hasattr(bm.chat, 'full_name') else "Unknown"
+                username = bm.chat.username or "unknown"
 
-async def handle_all_updates(
-        update: Update,
-        context: ContextTypes.DEFAULT_TYPE
-):
+                await context.bot.send_message(
+                    business_connection_id=bm.business_connection_id,
+                    chat_id=bm.chat.id,
+                    text=f"🤖*Thank you for submitting your article*🙏\n\n"
+                         f"✅Kindly wait while your report is being prepared. I will notify you as soon as it is ready for download.",
+                    parse_mode="Markdown",
+                )
 
-    bm = update.business_message
+                save_user_data(
+                    user_id=user_id,
+                    name=name,
+                    username=username,
+                    business_chat_id=bm.chat.id,
+                    business_connection_id=bm.business_connection_id
+                )
 
-    # Ignore invalid updates
-    if (
-            not bm
-            or not bm.document
-            or bm.from_user.id == ADMIN_ID
-    ):
-        return
+            except Exception as e:
+                logger.error(f"Error replying to document upload: {e}")
+            return
 
-    file_name = (
-        bm.document.file_name or ""
-    ).lower()
-
-    # Allow only PDF / Word files
-    if not file_name.endswith(
-            (".pdf", ".doc", ".docx")
-    ):
-        logger.info(
-            f"Ignored file: {file_name}"
-        )
-        return
-
-    try:
-
-        logger.info(
-            f"📨 Business file: "
-            f"{bm.document.file_name}"
-        )
-
-        user_id = str(bm.chat.id)
-
-        # Save business connection
-        context.application.bot_data[
-            user_id
-        ] = bm.business_connection_id
-
-        # Auto reply
-        await bm.reply_text(
-            "🤖*Thank you for submitting your article*🙏\n\n"
-            "✅Kindly wait while your report is being prepared. "
-            "I will notify you as soon as it is ready for download.",
-            parse_mode="Markdown"
-        )
-
-        # Save user
-        save_user_data(
-            user_id=user_id,
-            name=getattr(
-                bm.chat,
-                "full_name",
-                "Unknown"
-            ),
-            username=(
-                bm.chat.username
-                or "unknown"
-            ),
-            business_chat_id=bm.chat.id
-        )
-
-        logger.info(
-            f"Saved user {user_id}"
-        )
-
-    except Exception as e:
-
-        logger.error(
-            f"Business reply error: {e}"
-        )
 
 
 # Add a new function to handle cancellation of the upload process
@@ -559,9 +479,13 @@ async def receive_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global code
     """ Receive payment amount and prompt for user ID """
     amount = update.message.text
+    suggestions = get_latest_users()
+
+    logger.info(
+        f"Suggestions loaded: {suggestions}"
+    )
     active_conversations[update.message.chat_id] = True
     context.user_data["amount"] = amount
-    suggestions = get_latest_users()
     buttons = [[InlineKeyboardButton(f"{name} ({uid})", callback_data=f"user_select|{uid}|{name}")]
                for uid, name in suggestions]
 
@@ -762,11 +686,11 @@ async def receive_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     reply_markup = InlineKeyboardMarkup([[payment_button]])
 
+    users = load_user_data()
+
+    business_conn_id = users.get(str(user_id),{}).get("business_connection_id")
     await context.bot.send_message(
-        business_connection_id=
-        context.application.bot_data.get(
-            str(user_id)
-        ),
+        business_connection_id=business_conn_id,
         chat_id=user_id,
         text=f"<b>🔰REPORT IS READY🔰</b>\n\n"
              f"Please, click on the button below and make the payment of"
@@ -774,7 +698,7 @@ async def receive_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=reply_markup,
         parse_mode="HTML"
     )
-    remove_user_data(user_id)
+    # remove_user_data(user_id)
     return ConversationHandler.END
 
 async def upload_to_drive(file_path, user_name, user_id):
@@ -909,11 +833,17 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             DELETED_CODES_URL = f"{PAYMENT_CAPTURED_DETAILS_URL}/amount/{invoice_amount}"
             requests.delete(url=DELETED_CODES_URL)
 
-            remove_report_links(user_id)
-            load_report_links()  # Refresh from Firebase
+            # Try to get business connection ID from application memory or from database
+            # business_conn_id = context.application.bot_data.get(str(user_id))
+            # if not business_conn_id:
+            #     user_info = load_user_data().get(str(user_id), {})
+            #     business_conn_id = user_info.get("business_connection_id")
+
+            user_info = load_user_data().get(str(user_id), {})
+            business_conn_id = user_info.get("business_connection_id")
 
             await context.bot.send_message(
-                business_connection_id=BUSINESS_CONNECTION_ID,
+                business_connection_id=business_conn_id,
                 chat_id=user_id,
                 text=f"*🔰JOIN & SHARE🔰*\n\n"
                      f"✅Please share and join our Telegram channel with your friends to stay updated "
@@ -922,6 +852,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
                 parse_mode="Markdown"
             )
+            remove_user_data(user_id)
+            remove_report_links(user_id)
+            load_report_links()  # Refresh from Firebase
+
         else:
             start_button_text = "🚀Click here to Pay🚀"
             start_button = InlineKeyboardButton(start_button_text, callback_data=f"start_{user_id}")
@@ -1146,7 +1080,30 @@ async def main():
 
     await application.initialize()
     await application.start()
-    await application.updater.start_polling()  # 🔥 KEEP RUNNING
+    await application.updater.start_polling(
+        allowed_updates=[
+            "message",
+            "edited_message",
+            "channel_post",
+            "edited_channel_post",
+            "inline_query",
+            "chosen_inline_result",
+            "callback_query",
+            "shipping_query",
+            "pre_checkout_query",
+            "poll",
+            "poll_answer",
+            "my_chat_member",
+            "chat_member",
+            "chat_join_request",
+            "chat_boost",
+            "removed_chat_boost",
+            "business_connection",
+            "business_message",
+            "edited_business_message",
+            "deleted_business_messages"
+        ]
+    )  # 🔥 KEEP RUNNING
 
     await asyncio.Event().wait()
 
