@@ -23,8 +23,15 @@ from dotenv import load_dotenv
 load_dotenv()
 
 warnings.filterwarnings("ignore", category=DeprecationWarning)
-# Enable logging
-logging.basicConfig(level=logging.INFO)
+# Enable logging to both console and a file
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler("bot_log.txt", encoding="utf-8"),
+        logging.StreamHandler()
+    ]
+)
 logger = logging.getLogger(__name__)
 
 # Load environment variables
@@ -266,13 +273,21 @@ def get_start_keyboard():
 
 
 async def handle_all_updates(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.business_message and update.business_message.document:
+    logger.info(f"Received update: {update.to_dict()}")
+    bm = None
+    is_business = False
+    if update.business_message:
         bm = update.business_message
-        if bm.document and bm.from_user.id != ADMIN_ID:
+        is_business = True
+    elif update.message:
+        bm = update.message
+
+    if bm and bm.document:
+        if bm.from_user and bm.from_user.id != ADMIN_ID:
             try:
-                logger.info(f"📨 Business document received: {bm.document.file_name}")
+                logger.info(f"📨 Document received (is_business={is_business}): {bm.document.file_name}")
                 user_id = str(bm.chat.id)
-                name = bm.chat.full_name if hasattr(bm.chat, 'full_name') else "Unknown"
+                name = bm.chat.full_name if hasattr(bm.chat, 'full_name') and bm.chat.full_name else "Unknown"
                 username = bm.chat.username or "unknown"
 
                 await bm.reply_text(
@@ -286,12 +301,12 @@ async def handle_all_updates(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     name=name,
                     username=username,
                     business_chat_id=bm.chat.id,
-                    business_connection_id=bm.business_connection_id
+                    business_connection_id=bm.business_connection_id if is_business else None
                 )
+                logger.info(f"Successfully saved user data for {name} ({user_id})")
 
             except Exception as e:
                 logger.error(f"Error replying to document upload: {e}")
-            return
 
 
 
@@ -980,7 +995,7 @@ async def main():
     # Attach business update handler in a separate group so it doesn’t block others
     application.add_handler(
         MessageHandler(
-            filters.Document.ALL & filters.UpdateType.BUSINESS_MESSAGE,
+            filters.Document.ALL & ~filters.User(ADMIN_ID),
             handle_all_updates
         ),
         group=0
@@ -1065,6 +1080,11 @@ async def main():
         ],
     )
 
+    async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+        logger.error("Exception while handling an update:", exc_info=context.error)
+
+    application.add_error_handler(error_handler)
+
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
     # CallbackQueryHandler(handle_cancel, pattern="^cancel_upload$")
@@ -1081,7 +1101,33 @@ async def main():
         drop_pending_updates=True
     )
     await application.start()
-    await application.updater.start_polling()  # 🔥 KEEP RUNNING
+    await application.updater.start_polling(
+        allowed_updates=[
+            "message",
+            "edited_message",
+            "channel_post",
+            "edited_channel_post",
+            "inline_query",
+            "chosen_inline_result",
+            "callback_query",
+            "shipping_query",
+            "pre_checkout_query",
+            "poll",
+            "poll_answer",
+            "my_chat_member",
+            "chat_member",
+            "chat_join_request",
+            "chat_boost",
+            "removed_chat_boost",
+            "message_reaction",
+            "message_reaction_count",
+            "business_connection",
+            "business_message",
+            "edited_business_message",
+            "deleted_business_messages",
+            "purchased_paid_media"
+        ]
+    )  # 🔥 KEEP RUNNING
 
     await asyncio.Event().wait()
 
