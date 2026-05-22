@@ -9,7 +9,7 @@ import asyncio
 import fitz  # PyMuPDF
 from PyPDF2 import PdfReader, PdfWriter  # Required for sign_pdf
 from firebase_db import save_report_links, load_report_links, remove_report_links, save_user_data, load_user_data, get_latest_users, remove_user_data
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, ReplyKeyboardRemove
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, ReplyKeyboardRemove, ReplyParameters
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, ConversationHandler, CallbackQueryHandler#, CallbackContext, TypeHandler
 from google_drive_files import upload_and_get_link
 from paypal import create_paypal_payment_link, capture_payment
@@ -283,30 +283,51 @@ async def handle_all_updates(update: Update, context: ContextTypes.DEFAULT_TYPE)
         bm = update.message
 
     if bm and bm.document:
-        if bm.from_user and bm.from_user.id != ADMIN_ID:
-            try:
-                logger.info(f"📨 Document received (is_business={is_business}): {bm.document.file_name}")
-                user_id = str(bm.chat.id)
-                name = bm.chat.full_name if hasattr(bm.chat, 'full_name') and bm.chat.full_name else "Unknown"
-                username = bm.chat.username or "unknown"
+        if bm.chat.id == ADMIN_ID:
+            logger.info("Ignoring document sent by ADMIN")
+            return
 
-                await bm.reply_text(
+        try:
+            logger.info(f"📨 Document received (is_business={is_business}): {bm.document.file_name}")
+            user_id = str(bm.chat.id)
+            name = bm.chat.full_name if hasattr(bm.chat, 'full_name') and bm.chat.full_name else "Unknown"
+            username = bm.chat.username or "unknown"
+
+            # Reply parameters MUST NOT contain chat_id for business connections
+            # To be 100% safe, we do not quote business messages to avoid any Telegram API validation/quoting limitations.
+            reply_params = None if is_business else ReplyParameters(message_id=bm.message_id)
+
+            await context.bot.send_message(
+                chat_id=bm.chat.id,
+                text=(
                     "🤖*Thank you for submitting your article*🙏\n\n"
-                    "✅Kindly wait while your report is being prepared. I will notify you as soon as it is ready for download.",
-                    parse_mode="Markdown",
-                )
+                    "✅Kindly wait while your report is being prepared. I will notify you as soon as it is ready for download."
+                ),
+                parse_mode="Markdown",
+                business_connection_id=bm.business_connection_id if is_business else None,
+                reply_parameters=reply_params
+            )
 
-                save_user_data(
-                    user_id=user_id,
-                    name=name,
-                    username=username,
-                    business_chat_id=bm.chat.id,
-                    business_connection_id=bm.business_connection_id if is_business else None
-                )
-                logger.info(f"Successfully saved user data for {name} ({user_id})")
+            save_user_data(
+                user_id=user_id,
+                name=name,
+                username=username,
+                business_chat_id=bm.chat.id,
+                business_connection_id=bm.business_connection_id if is_business else None
+            )
+            logger.info(f"Successfully saved user data for {name} ({user_id})")
 
-            except Exception as e:
-                logger.error(f"Error replying to document upload: {e}")
+        except Exception as e:
+            logger.error(f"Error replying to document upload: {e}")
+            # Real-time error notification to the Admin
+            try:
+                await context.bot.send_message(
+                    chat_id=ADMIN_ID,
+                    text=f"⚠️ *Error in document handler:*\n`{e}`\n\nUser ID: `{bm.chat.id}`",
+                    parse_mode="Markdown"
+                )
+            except Exception as notify_err:
+                logger.error(f"Failed to notify admin of error: {notify_err}")
 
 
 
@@ -995,10 +1016,10 @@ async def main():
     # Attach business update handler in a separate group so it doesn’t block others
     application.add_handler(
         MessageHandler(
-            filters.Document.ALL & ~filters.User(ADMIN_ID),
+            filters.Document.ALL,
             handle_all_updates
         ),
-        group=0
+        group=1
     )
 
     # Upload file conversation handler
