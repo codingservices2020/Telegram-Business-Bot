@@ -1079,6 +1079,9 @@ async def main():
     # application.run_polling()
 
     await application.initialize()
+    await application.bot.delete_webhook(
+        drop_pending_updates=True
+    )
     await application.start()
     await application.updater.start_polling(
         allowed_updates=[
