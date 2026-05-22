@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import os
 import json
 import firebase_admin
@@ -91,7 +91,7 @@ def save_user_data(user_id, name, username, business_chat_id=None, business_conn
         "username": username,
         "business_chat_id": business_chat_id,
         "business_connection_id": business_connection_id,
-        "timestamp": firestore.SERVER_TIMESTAMP  # 🔥 Add timestamp
+        "timestamp": datetime.now(timezone.utc)  # 🔥 Add timestamp
     }
     doc_ref.set(data, merge=True)
 
