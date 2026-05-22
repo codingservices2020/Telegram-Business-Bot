@@ -9,8 +9,8 @@ from dotenv import load_dotenv
 # Load environment variables
 load_dotenv()
 
-# DB_FILE_NAME = "testing_database"  # Define the firebase database file
-DB_FILE_NAME = "Reports_Download_links"  # Define the firebase database file
+DB_FILE_NAME = "testing_database"  # Define the firebase database file
+# DB_FILE_NAME = "Reports_Download_links"  # Define the firebase database file
 
 # Build the Firebase credentials dictionary dynamically
 firebase_config = {
@@ -84,15 +84,14 @@ def remove_report_links(user_id):
 
 ###################################################################################
 
-def save_user_data(user_id, name, username, business_chat_id=None):
+def save_user_data(user_id, name, username, business_chat_id=None, business_connection_id=None):
     doc_ref = db.collection("users").document(str(user_id))
     data = {
         "name": name,
         "username": username,
         "business_chat_id": business_chat_id,
-        # "business_connection_id": business_connection_id,
-        "timestamp": datetime.utcnow().isoformat()  # 🔥 Add timestamp
-
+        "business_connection_id": business_connection_id,
+        "timestamp": firestore.SERVER_TIMESTAMP  # 🔥 Add timestamp
     }
     doc_ref.set(data, merge=True)
 
@@ -107,7 +106,7 @@ def load_user_data():
                 "name": user.to_dict().get("name", "Unknown"),
                 "username": user.to_dict().get("username", "Unknown"),
                 "business_chat_id": user.to_dict().get("business_chat_id"),
-                # "business_connection_id": user.to_dict().get("business_connection_id"),
+                "business_connection_id": user.to_dict().get("business_connection_id"),
                 "timestamp": user.to_dict().get("timestamp")
             }
             for user in users_ref
@@ -132,4 +131,3 @@ def get_latest_users(limit=4):
     except Exception as e:
         print(f"Firestore Error: {e}")
         return []
-
