@@ -293,21 +293,7 @@ async def handle_all_updates(update: Update, context: ContextTypes.DEFAULT_TYPE)
             name = bm.chat.full_name if hasattr(bm.chat, 'full_name') and bm.chat.full_name else "Unknown"
             username = bm.chat.username or "unknown"
 
-            # Reply parameters MUST NOT contain chat_id for business connections
-            # To be 100% safe, we do not quote business messages to avoid any Telegram API validation/quoting limitations.
-            reply_params = None if is_business else ReplyParameters(message_id=bm.message_id)
-
-            await context.bot.send_message(
-                chat_id=bm.chat.id,
-                text=(
-                    "🤖*Thank you for submitting your article*🙏\n\n"
-                    "✅Kindly wait while your report is being prepared. I will notify you as soon as it is ready for download."
-                ),
-                parse_mode="Markdown",
-                business_connection_id=bm.business_connection_id if is_business else None,
-                reply_parameters=reply_params
-            )
-
+            # Save user data to Firestore first
             save_user_data(
                 user_id=user_id,
                 name=name,
@@ -317,13 +303,47 @@ async def handle_all_updates(update: Update, context: ContextTypes.DEFAULT_TYPE)
             )
             logger.info(f"Successfully saved user data for {name} ({user_id})")
 
+            # Reply parameters MUST NOT contain chat_id for business connections
+            # To be 100% safe, we do not quote business messages to avoid any Telegram API validation/quoting limitations.
+            reply_params = None if is_business else ReplyParameters(message_id=bm.message_id)
+
+            try:
+                await context.bot.send_message(
+                    chat_id=bm.chat.id,
+                    text=(
+                        "🤖*Thank you for submitting your article*🙏\n\n"
+                        "✅Kindly wait while your report is being prepared. I will notify you as soon as it is ready for download."
+                    ),
+                    parse_mode="Markdown",
+                    business_connection_id=bm.business_connection_id if is_business else None,
+                    reply_parameters=reply_params
+                )
+                logger.info("Sent thank-you message via business connection")
+            except Exception as conn_err:
+                logger.warning(f"Failed to reply via business connection, attempting direct send: {conn_err}")
+                # Fallback to direct send (only works if user has started the bot)
+                await context.bot.send_message(
+                    chat_id=bm.chat.id,
+                    text=(
+                        "🤖*Thank you for submitting your article*🙏\n\n"
+                        "✅Kindly wait while your report is being prepared. I will notify you as soon as it is ready for download."
+                    ),
+                    parse_mode="Markdown",
+                    reply_parameters=None
+                )
+                logger.info("Sent thank-you message directly (fallback)")
+
         except Exception as e:
             logger.error(f"Error replying to document upload: {e}")
-            # Real-time error notification to the Admin
+            # Real-time error notification to the Admin with troubleshooting tip
+            err_msg = str(e)
+            admin_advice = ""
+            if "business_peer_invalid" in err_msg.lower():
+                admin_advice = "\n\n💡 *Tip:* Please check if your bot has 'Can Reply' toggled ON in your Telegram app: *Settings -> Business -> Chatbots*."
             try:
                 await context.bot.send_message(
                     chat_id=ADMIN_ID,
-                    text=f"⚠️ *Error in document handler:*\n`{e}`\n\nUser ID: `{bm.chat.id}`",
+                    text=f"⚠️ *Error in document handler:*\n`{err_msg}`{admin_advice}\n\nUser ID: `{bm.chat.id}`",
                     parse_mode="Markdown"
                 )
             except Exception as notify_err:
@@ -723,15 +743,29 @@ async def receive_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     users = load_user_data()
 
     business_conn_id = users.get(str(user_id),{}).get("business_connection_id")
-    await context.bot.send_message(
-        business_connection_id=business_conn_id,
-        chat_id=user_id,
-        text=f"<b>🔰REPORT IS READY🔰</b>\n\n"
-             f"Please, click on the button below and make the payment of"
-             f" <b>{payment_amount}</b> to download your report.",
-        reply_markup=reply_markup,
-        parse_mode="HTML"
-    )
+    try:
+        await context.bot.send_message(
+            business_connection_id=business_conn_id,
+            chat_id=user_id,
+            text=f"<b>🔰REPORT IS READY🔰</b>\n\n"
+                 f"Please, click on the button below and make the payment of"
+                 f" <b>{payment_amount}</b> to download your report.",
+            reply_markup=reply_markup,
+            parse_mode="HTML"
+        )
+        logger.info(f"Sent report ready message to {user_id} via business connection")
+    except Exception as conn_err:
+        logger.warning(f"Failed sending report ready message to {user_id} via business connection: {conn_err}. Attempting direct send.")
+        # Fallback to direct send
+        await context.bot.send_message(
+            chat_id=user_id,
+            text=f"<b>🔰REPORT IS READY🔰</b>\n\n"
+                 f"Please, click on the button below and make the payment of"
+                 f" <b>{payment_amount}</b> to download your report.",
+            reply_markup=reply_markup,
+            parse_mode="HTML"
+        )
+        logger.info(f"Sent report ready message to {user_id} directly (fallback)")
     # remove_user_data(user_id)
     return ConversationHandler.END
 
@@ -876,16 +910,29 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             user_info = load_user_data().get(str(user_id), {})
             business_conn_id = user_info.get("business_connection_id")
 
-            await context.bot.send_message(
-                business_connection_id=business_conn_id,
-                chat_id=user_id,
-                text=f"*🔰JOIN & SHARE🔰*\n\n"
-                     f"✅Please share and join our Telegram channel with your friends to stay updated "
-                     f"about our products and services and also for weekly giveaways🎁\n\n"
-                     f"❤️ Join our Telegram channel: https://t.me/+66qt38tocAI0ZWI1",
-
-                parse_mode="Markdown"
-            )
+            try:
+                await context.bot.send_message(
+                    business_connection_id=business_conn_id,
+                    chat_id=user_id,
+                    text=f"*🔰JOIN & SHARE🔰*\n\n"
+                         f"✅Please share and join our Telegram channel with your friends to stay updated "
+                         f"about our products and services and also for weekly giveaways🎁\n\n"
+                         f"❤️ Join our Telegram channel: https://t.me/+66qt38tocAI0ZWI1",
+                    parse_mode="Markdown"
+                )
+                logger.info(f"Sent join & share message to {user_id} via business connection")
+            except Exception as conn_err:
+                logger.warning(f"Failed sending join & share message to {user_id} via business connection: {conn_err}. Attempting direct send.")
+                # Fallback to direct send
+                await context.bot.send_message(
+                    chat_id=user_id,
+                    text=f"*🔰JOIN & SHARE🔰*\n\n"
+                         f"✅Please share and join our Telegram channel with your friends to stay updated "
+                         f"about our products and services and also for weekly giveaways🎁\n\n"
+                         f"❤️ Join our Telegram channel: https://t.me/+66qt38tocAI0ZWI1",
+                    parse_mode="Markdown"
+                )
+                logger.info(f"Sent join & share message to {user_id} directly (fallback)")
             remove_user_data(user_id)
             remove_report_links(user_id)
             load_report_links()  # Refresh from Firebase
