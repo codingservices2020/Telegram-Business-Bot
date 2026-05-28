@@ -19,8 +19,8 @@ import warnings
 from keep_alive import keep_alive
 keep_alive()
 
-# from dotenv import load_dotenv
-# load_dotenv()
+from dotenv import load_dotenv
+load_dotenv()
 
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 # Enable logging to both console and a file
@@ -96,15 +96,10 @@ START_BUTTON = "🤖 Start the Bot"
 
 
 
-if os.path.exists(DATA_FILE):
-    try:
-        with open(DATA_FILE, "r") as f:
-            file_content = f.read().strip()  # Remove any accidental empty spaces
-            report_links = json.loads(file_content) if file_content else {}
-    except json.JSONDecodeError:
-        print("Warning: JSON file is corrupted. Resetting data.")
-        report_links = {}
-else:
+try:
+    report_links = load_report_links()
+except Exception as e:
+    print(f"Error loading report links from Firebase at startup: {e}")
     report_links = {}
 
 def save_data():
@@ -283,8 +278,16 @@ async def handle_all_updates(update: Update, context: ContextTypes.DEFAULT_TYPE)
         bm = update.message
 
     if bm and bm.document:
-        if bm.chat.id == ADMIN_ID:
-            logger.info("Ignoring document sent by ADMIN")
+        # Ignore documents sent by the admin (from_user.id is ADMIN_ID) or in the admin's private chat
+        if (bm.from_user and bm.from_user.id == ADMIN_ID) or bm.chat.id == ADMIN_ID:
+            logger.info("Ignoring document sent by ADMIN or in ADMIN chat")
+            return
+
+        # Check if the document is a Word or PDF file
+        file_name = bm.document.file_name or ""
+        is_word_or_pdf = file_name.lower().endswith(('.pdf', '.doc', '.docx'))
+        if not is_word_or_pdf:
+            logger.info(f"Ignoring document of unsupported type: {file_name}")
             return
 
         try:
@@ -804,6 +807,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         chat_id = update.message.from_user.id
         user_id = str(chat_id)
         message = update.message  # Use the message from the regular update
+
+    # Refresh report links from Firebase to ensure persistent data on Render/restarts
+    global report_links
+    report_links = load_report_links()
 
     # Check if there's any user's report
     if user_id in report_links:
