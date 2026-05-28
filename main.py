@@ -617,6 +617,19 @@ async def handle_user_suggestion(update: Update, context: ContextTypes.DEFAULT_T
     context.user_data["name"] = name
     context.user_data["user_id_from_button"] = uid
 
+    # Retrieve and cache the user's business connection ID before they are deleted
+    users = load_user_data()
+    user_info = users.get(str(uid), {})
+    business_conn_id = user_info.get("business_connection_id")
+    context.user_data["business_connection_id"] = business_conn_id
+
+    # Immediately delete the user from the Firestore suggestions list
+    try:
+        remove_user_data(uid)
+        logger.info(f"User {name} ({uid}) removed from suggestions list.")
+    except Exception as e:
+        logger.error(f"Error removing user {uid} from suggestions list: {e}")
+
     keyboard = [
         [
             InlineKeyboardButton("✅ Yes", callback_data="sign_yes"),
@@ -743,9 +756,11 @@ async def receive_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     reply_markup = InlineKeyboardMarkup([[payment_button]])
 
-    users = load_user_data()
-
-    business_conn_id = users.get(str(user_id),{}).get("business_connection_id")
+    # Use the cached business connection ID first; fallback to database lookup if not cached
+    business_conn_id = context.user_data.get("business_connection_id")
+    if not business_conn_id:
+        users = load_user_data()
+        business_conn_id = users.get(str(user_id), {}).get("business_connection_id")
     try:
         await context.bot.send_message(
             business_connection_id=business_conn_id,
