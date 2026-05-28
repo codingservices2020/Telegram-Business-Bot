@@ -35,7 +35,7 @@ firebase_admin.initialize_app(cred)
 db = firestore.client()
 
 
-def save_report_links(user_id, amount, links, region="indian", paypal_order_id=None, paypal_approve_url=None):
+def save_report_links(user_id, amount, links, region="indian", paypal_order_id=None, paypal_approve_url=None, business_connection_id=None):
     """Save user subscription to Firestore (supports PayPal order ID for non-Indian users)"""
     doc_ref = db.collection(DB_FILE_NAME).document(str(user_id))
 
@@ -45,6 +45,9 @@ def save_report_links(user_id, amount, links, region="indian", paypal_order_id=N
         "region": region,
     }
 
+    if business_connection_id:
+        data["business_connection_id"] = business_connection_id
+
     # 🔥 Store PayPal order ID only for non-Indian users
     if paypal_order_id:
         data["paypal_order_id"] = paypal_order_id
@@ -52,7 +55,7 @@ def save_report_links(user_id, amount, links, region="indian", paypal_order_id=N
     if paypal_approve_url:
         data["paypal_approve_url"] = paypal_approve_url
 
-    doc_ref.set(data)
+    doc_ref.set(data, merge=True)
 
 
 def load_report_links():
@@ -66,7 +69,7 @@ def load_report_links():
                 "region": user.to_dict().get("region", "Unknown"),
                 "paypal_order_id": user.to_dict().get("paypal_order_id"),  # 🔥 NEW
                 "paypal_approve_url": user.to_dict().get("paypal_approve_url"),
-
+                "business_connection_id": user.to_dict().get("business_connection_id"),
             }
             for user in users_ref
         }
