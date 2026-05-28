@@ -660,6 +660,13 @@ async def receive_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return ConversationHandler.END
 
+    # Use the cached business connection ID first; fallback to database lookup if not cached
+    business_conn_id = context.user_data.get("business_connection_id")
+    if not business_conn_id:
+        users = load_user_data()
+        business_conn_id = users.get(str(user_id), {}).get("business_connection_id")
+        context.user_data["business_connection_id"] = business_conn_id
+
     amount = context.user_data.get("amount")
     name = context.user_data.get("name", "Unknown")
     region = context.user_data.get("region", "indian")
@@ -700,7 +707,7 @@ async def receive_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
             print(f"URL shortener failed: {short}")
             short_links.append(link)  # use original Google Drive link
 
-    save_report_links(user_id, amount, short_links, region)  # Update this function to store region
+    save_report_links(user_id, amount, short_links, region, business_connection_id=business_conn_id)  # Update this function to store region
 
     global report_links
     report_links = load_report_links()
@@ -739,7 +746,8 @@ async def receive_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
             short_links,
             region,
             paypal_order_id=order_id,
-            paypal_approve_url=paypal_url
+            paypal_approve_url=paypal_url,
+            business_connection_id=business_conn_id
         )
 
         payment_button = InlineKeyboardButton(
@@ -756,11 +764,6 @@ async def receive_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     reply_markup = InlineKeyboardMarkup([[payment_button]])
 
-    # Use the cached business connection ID first; fallback to database lookup if not cached
-    business_conn_id = context.user_data.get("business_connection_id")
-    if not business_conn_id:
-        users = load_user_data()
-        business_conn_id = users.get(str(user_id), {}).get("business_connection_id")
     try:
         await context.bot.send_message(
             business_connection_id=business_conn_id,
@@ -853,7 +856,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     amount,
                     report_links[user_id]["links"],
                     region,
-                    paypal_order_id=order_id
+                    paypal_order_id=order_id,
+                    paypal_approve_url=paypal_url,
+                    business_connection_id=report_links[user_id].get("business_connection_id")
                 )
         download_button_text = "📥 Download Report"
         payment_button = InlineKeyboardButton(
@@ -929,8 +934,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             #     user_info = load_user_data().get(str(user_id), {})
             #     business_conn_id = user_info.get("business_connection_id")
 
-            user_info = load_user_data().get(str(user_id), {})
-            business_conn_id = user_info.get("business_connection_id")
+            # Get the business connection ID from the report data (which we saved in Firestore)
+            business_conn_id = report_links.get(str(user_id), {}).get("business_connection_id")
+            if not business_conn_id:
+                user_info = load_user_data().get(str(user_id), {})
+                business_conn_id = user_info.get("business_connection_id")
 
             try:
                 await context.bot.send_message(
