@@ -832,9 +832,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Check if there's any user's report
     if user_id in report_links:
-        # Get region from report_links (you'll need to update the save_report_links function)
+        # Get region from report_links
         region = report_links[user_id].get('region', 'indian')
         amount = report_links[user_id].get('amount')
+        business_conn_id = report_links[user_id].get("business_connection_id")
+
         if region == "indian":
             payment_amount = f"Rs {amount}/-"
             razorpay_url = RAZORPAY_PAYMENT_URL
@@ -858,7 +860,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     region,
                     paypal_order_id=order_id,
                     paypal_approve_url=paypal_url,
-                    business_connection_id=report_links[user_id].get("business_connection_id")
+                    business_connection_id=business_conn_id
                 )
         download_button_text = "📥 Download Report"
         payment_button = InlineKeyboardButton(
@@ -869,16 +871,34 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard = [[payment_button], [download_button]]
         reply_markup = InlineKeyboardMarkup(keyboard)
 
-        await message.reply_text(
-            f"*🔰Report Downloader Bot🔰*"
-            f"\n\nTo download your report, follow these two steps:"
-            f"\n 1️⃣ First click on the button below and make the payment of {payment_amount}."
-            f"\n 2️⃣ After payment download the report."
-            f"\n\n Your User ID: `{user_id}` (tap to copy)\n\n"
-            f"✅ Use this User ID on {payment_method} Payment Gateway.",
-            reply_markup=reply_markup,
-            parse_mode="Markdown"
-        )
+        try:
+            await context.bot.send_message(
+                business_connection_id=business_conn_id,
+                chat_id=user_id,
+                text=(
+                    f"*🔰Report Downloader Bot🔰*\n\n"
+                    f"To download your report, follow these two steps:\n"
+                    f" 1️⃣ First click on the button below and make the payment of {payment_amount}.\n"
+                    f" 2️⃣ After payment download the report.\n\n"
+                    f" Your User ID: `{user_id}` (tap to copy)\n\n"
+                    f"✅ Use this User ID on {payment_method} Payment Gateway."
+                ),
+                reply_markup=reply_markup,
+                parse_mode="Markdown"
+            )
+            logger.info(f"Sent report downloader message to {user_id} via business connection")
+        except Exception as conn_err:
+            logger.warning(f"Failed sending report downloader message to {user_id} via business connection: {conn_err}. Attempting direct send.")
+            await message.reply_text(
+                f"*🔰Report Downloader Bot🔰*"
+                f"\n\nTo download your report, follow these two steps:"
+                f"\n 1️⃣ First click on the button below and make the payment of {payment_amount}."
+                f"\n 2️⃣ After payment download the report."
+                f"\n\n Your User ID: `{user_id}` (tap to copy)\n\n"
+                f"✅ Use this User ID on {payment_method} Payment Gateway.",
+                reply_markup=reply_markup,
+                parse_mode="Markdown"
+            )
     else:
         await message.reply_text("🚫 There is no information about your report. Please contact Admin @coding_services.")
 
