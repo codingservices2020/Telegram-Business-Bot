@@ -14,12 +14,14 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKe
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, ConversationHandler, CallbackQueryHandler#, CallbackContext, TypeHandler
 from google_drive_files import upload_and_get_link
 # from paypal import create_paypal_payment_link, capture_payment
+
+
 import warnings
 from keep_alive import keep_alive
 keep_alive()
 
-# from dotenv import load_dotenv
-# load_dotenv()
+from dotenv import load_dotenv
+load_dotenv()
 
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 # Enable logging to both console and a file
