@@ -4,22 +4,28 @@ import logging
 # from locale import currency
 
 import requests
+import httpx
 import uuid
 import asyncio
 import fitz  # PyMuPDF
 from PyPDF2 import PdfReader, PdfWriter  # Required for sign_pdf
-from firebase_db import save_report_links, load_report_links, remove_report_links, save_user_data, load_user_data, get_latest_users, remove_user_data
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, ReplyKeyboardRemove, ReplyParameters
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, ConversationHandler, CallbackQueryHandler#, CallbackContext, TypeHandler
+from firebase_db import save_report_links, load_report_links, remove_report_links, save_user_data, load_user_data, \
+    get_latest_users, remove_user_data
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, ReplyKeyboardRemove, \
+    ReplyParameters
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, ConversationHandler, \
+    CallbackQueryHandler  # , CallbackContext, TypeHandler
 from google_drive_files import upload_and_get_link
-from paypal import create_paypal_payment_link, capture_payment
+# from paypal import create_paypal_payment_link, capture_payment
 
 
 import warnings
 from keep_alive import keep_alive
+
 keep_alive()
 
 from dotenv import load_dotenv
+
 load_dotenv()
 
 warnings.filterwarnings("ignore", category=DeprecationWarning)
@@ -44,8 +50,9 @@ URL = f'https://api.telegram.org/bot{TOKEN}/getUpdates'
 GDRIVE_FOLDER_ID = os.getenv("GDRIVE_FOLDER_ID")
 ADMIN_ID = int(os.getenv("ADMIN_ID"))
 RAZORPAY_PAYMENT_URL = os.getenv('RAZORPAY_PAYMENT_URL')
+RAZORPAY_USD_PAYMENT_URL = os.getenv('RAZORPAY_USD_PAYMENT_URL') or os.getenv('RAZORPAY_PAYMENT_URL')
 PAYPAL_PAYMENT_URL = os.getenv('PAYPAL_PAYMENT_URL')
-PAYMENT_CAPTURED_DETAILS_URL= os.getenv("PAYMENT_CAPTURED_DETAILS_URL")
+PAYMENT_CAPTURED_DETAILS_URL = os.getenv("PAYMENT_CAPTURED_DETAILS_URL")
 PAYPAL_API_BASE = os.getenv('PAYPAL_API_BASE')
 PAYPAL_CLIENT_ID = os.getenv('PAYPAL_CLIENT_ID')
 PAYPAL_SECRET = os.getenv('PAYPAL_SECRET')
@@ -73,9 +80,6 @@ WAITING_FOR_DELETE_USER_ID = 108  # for /show_users command
 WAITING_FOR_SIGN_CONFIRMATION = 109
 WAITING_FOR_REGION = 110  # Update the states to include region selection
 
-
-
-
 # Load existing file data or initialize an empty dictionary
 DATA_FILE = "file_data.json"
 report_links = {}
@@ -95,6 +99,10 @@ CANCEL_BUTTON = "🚫 Cancel"
 START_BUTTON = "🤖 Start the Bot"
 
 
+def is_valid_url(url):
+    """Check if the URL is non-empty, a string, and starts with a valid protocol."""
+    return isinstance(url, str) and (url.startswith("http://") or url.startswith("https://"))
+
 
 try:
     report_links = load_report_links()
@@ -102,10 +110,12 @@ except Exception as e:
     print(f"Error loading report links from Firebase at startup: {e}")
     report_links = {}
 
+
 def save_data():
     """Save the file data to JSON."""
     with open(DATA_FILE, "w") as f:
         json.dump(report_links, f, indent=4)
+
 
 def edit_pdf(input_pdf, output_pdf, output_pdf_name, selected_text, do_sign):
     doc = fitz.open(input_pdf)
@@ -163,7 +173,6 @@ def edit_pdf(input_pdf, output_pdf, output_pdf_name, selected_text, do_sign):
     doc.close()
 
 
-
 def sign_pdf(pdf_file_path):
     reader = PdfReader(pdf_file_path)
     writer = PdfWriter()
@@ -180,21 +189,43 @@ def sign_pdf(pdf_file_path):
 
     return signed_pdf_path
 
-def verify_payment(chat_id,payment_amount):
-    response = requests.get(url=PAYMENT_CAPTURED_DETAILS_URL)
-    try:
-        response.raise_for_status()
-        data = response.json()
-        for entry in data:
-            if entry['user_id'] == str(chat_id):
-                if entry['amount'] == str(payment_amount):
-                    return True
-        print("No payment details found! ")
-    except requests.exceptions.HTTPError as err:
-        print("HTTP Error:", err)
+
+async def verify_payment(chat_id, payment_amount):
+    max_retries = 3
+    retry_delay = 2.0  # seconds
+
+    for attempt in range(max_retries):
+        try:
+            logger.info(
+                f"Verifying payment for chat_id={chat_id}, amount={payment_amount} (attempt {attempt + 1}/{max_retries})")
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.get(PAYMENT_CAPTURED_DETAILS_URL)
+                response.raise_for_status()
+                data = response.json()
+
+                if isinstance(data, list):
+                    for entry in data:
+                        if entry.get('user_id') == str(chat_id):
+                            if entry.get('amount') == str(payment_amount):
+                                logger.info(f"Payment verified for user {chat_id}")
+                                return True
+                logger.info("No matching payment details found in SheetDB.")
+                return False
+        except httpx.HTTPStatusError as err:
+            logger.warning(f"HTTP error during payment verification (attempt {attempt + 1}/{max_retries}): {err}")
+        except httpx.RequestError as err:
+            logger.warning(
+                f"Request error / SSL error during payment verification (attempt {attempt + 1}/{max_retries}): {err}")
+
+        if attempt < max_retries - 1:
+            await asyncio.sleep(retry_delay)
+
+    logger.error("Max retries exceeded or error occurred during payment verification.")
+    return False
+
 
 def shorten_url(long_url):
-    BASE_URL="https://api.short.io/links/"     # Short.io API Endpoint
+    BASE_URL = "https://api.short.io/links/"  # Short.io API Endpoint
     # Headers
     headers = {
         "Authorization": SHORTIO_LINK_API_KEY,
@@ -258,9 +289,11 @@ def process_all_files(context, do_sign):
 
     return processed_files
 
+
 # Function to create a reply keyboard with a Cancel button
 def get_cancel_keyboard():
     return ReplyKeyboardMarkup([[CANCEL_BUTTON]], resize_keyboard=True, one_time_keyboard=True)
+
 
 # Function to create a reply keyboard with a Cancel button
 def get_start_keyboard():
@@ -353,7 +386,6 @@ async def handle_all_updates(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 logger.error(f"Failed to notify admin of error: {notify_err}")
 
 
-
 # Add a new function to handle cancellation of the upload process
 async def cancel_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Cancel the upload process and reset the conversation state."""
@@ -379,8 +411,8 @@ async def upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(
         "🌍 *Select your region:*\n\n"
-        "1. 🇮🇳 Indian - Use Razorpay for payment\n"
-        "2. 🌍 Non-Indian - Use PayPal for payment",
+        "1. 🇮🇳 Indian - Use Razorpay (INR) for payment\n"
+        "2. 🌍 Non-Indian - Use Razorpay (USD) for payment",
         reply_markup=reply_markup,
         parse_mode="Markdown"
     )
@@ -396,11 +428,11 @@ async def handle_region_selection(update: Update, context: ContextTypes.DEFAULT_
     if query.data == "region_indian":
         context.user_data["region"] = "indian"
         context.user_data["payment_url"] = RAZORPAY_PAYMENT_URL
-        region_text = "🇮🇳 Indian (Razorpay)"
+        region_text = "🇮🇳 Indian (Razorpay INR)"
     else:
         context.user_data["region"] = "non_indian"
-        context.user_data["payment_url"] = PAYPAL_PAYMENT_URL
-        region_text = "🌍 Non-Indian (PayPal)"
+        context.user_data["payment_url"] = RAZORPAY_USD_PAYMENT_URL
+        region_text = "🌍 Non-Indian (Razorpay USD)"
 
     cancel_markup = InlineKeyboardMarkup([
         [InlineKeyboardButton("🚫 Cancel", callback_data="cancel_upload")]
@@ -426,6 +458,7 @@ async def handle_region_selection(update: Update, context: ContextTypes.DEFAULT_
 
     return WAITING_FOR_UPLOAD_OPTION
 
+
 # Handle the Cancel button
 async def handle_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle the Cancel button press."""
@@ -435,6 +468,7 @@ async def handle_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=ReplyKeyboardRemove()  # Remove the custom keyboard
     )
     return ConversationHandler.END
+
 
 async def upload_option_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -451,6 +485,7 @@ async def upload_option_handler(update: Update, context: ContextTypes.DEFAULT_TY
     else:
         await query.edit_message_text("✳️ Please enter how many files you want to upload (must be a number > 2):")
         return WAITING_FOR_MULTIPLE_FILES
+
 
 async def ask_file_count(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_input = update.message.text.strip()
@@ -500,7 +535,6 @@ async def handle_multiple_files(update: Update, context: ContextTypes.DEFAULT_TY
     return COLLECTING_FILES
 
 
-
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """ Handle file upload from users """
     document = update.message.document
@@ -532,6 +566,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     return WAITING_FOR_PAYMENT
 
+
 async def receive_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global code
     """ Receive payment amount and prompt for user ID """
@@ -553,6 +588,7 @@ async def receive_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=reply_markup
     )
     return WAITING_FOR_NAME
+
 
 async def receive_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     name = update.message.text.strip()
@@ -707,7 +743,8 @@ async def receive_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
             print(f"URL shortener failed: {short}")
             short_links.append(link)  # use original Google Drive link
 
-    save_report_links(user_id, amount, short_links, region, business_connection_id=business_conn_id)  # Update this function to store region
+    save_report_links(user_id, amount, short_links, region,
+                      business_connection_id=business_conn_id)  # Update this function to store region
 
     global report_links
     report_links = load_report_links()
@@ -732,35 +769,11 @@ async def receive_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="HTML"
     )
 
-    # Get the payment URL based on region
-    if region == "non_indian":
-        order_id, paypal_url = create_paypal_payment_link(amount, user_id)
-
-        # store PayPal order id for later verification
-        report_links[user_id]["paypal_order_id"] = order_id
-        report_links[user_id]["paypal_approve_url"] = paypal_url
-
-        save_report_links(
-            user_id,
-            amount,
-            short_links,
-            region,
-            paypal_order_id=order_id,
-            paypal_approve_url=paypal_url,
-            business_connection_id=business_conn_id
-        )
-
-        payment_button = InlineKeyboardButton(
-            "👉 Click here to proceed",
-            callback_data=f"start_{user_id}"
-        )
-
-    else:
-        # 🔥 KEEP INDIAN FLOW EXACTLY AS-IS
-        payment_button = InlineKeyboardButton(
-            f"🚀Click here to Pay {payment_amount}🚀",
-            callback_data=f"start_{user_id}"
-        )
+    # Unify payment flow using Razorpay (INR or USD)
+    payment_button = InlineKeyboardButton(
+        f"🚀Click here to Pay {payment_amount}🚀",
+        callback_data=f"start_{user_id}"
+    )
 
     reply_markup = InlineKeyboardMarkup([[payment_button]])
 
@@ -776,7 +789,8 @@ async def receive_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         logger.info(f"Sent report ready message to {user_id} via business connection")
     except Exception as conn_err:
-        logger.warning(f"Failed sending report ready message to {user_id} via business connection: {conn_err}. Attempting direct send.")
+        logger.warning(
+            f"Failed sending report ready message to {user_id} via business connection: {conn_err}. Attempting direct send.")
         # Fallback to direct send
         await context.bot.send_message(
             chat_id=user_id,
@@ -789,6 +803,7 @@ async def receive_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.info(f"Sent report ready message to {user_id} directly (fallback)")
     # remove_user_data(user_id)
     return ConversationHandler.END
+
 
 async def upload_to_drive(file_path, user_name, user_id):
     """
@@ -808,8 +823,6 @@ async def upload_to_drive(file_path, user_name, user_id):
     except Exception as e:
         logger.error(f"❌ Error uploading file to Google Drive: {e}")
         return None
-
-
 
 
 # ------------------ Start Command ------------------ #
@@ -840,35 +853,32 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if region == "indian":
             payment_amount = f"Rs {amount}/-"
             razorpay_url = RAZORPAY_PAYMENT_URL
-            payment_method = "Razorpay"
+            payment_method = "Razorpay (INR)"
         else:
             payment_amount = f"${amount}"
-            payment_method = "PayPal"
-            order_id = report_links[user_id].get("paypal_order_id")
-            paypal_url = report_links[user_id].get("paypal_approve_url")
-            # 🔥 Create PayPal order ONLY if it doesn't exist
-            if not order_id or not paypal_url:
-                order_id, paypal_url = create_paypal_payment_link(amount, user_id)
+            razorpay_url = RAZORPAY_USD_PAYMENT_URL
+            payment_method = "Razorpay (USD)"
 
-                report_links[user_id]["paypal_order_id"] = order_id
-                report_links[user_id]["paypal_approve_url"] = paypal_url
+        # Fallback to alternative env url if the selected one is invalid
+        if not is_valid_url(razorpay_url):
+            if is_valid_url(RAZORPAY_PAYMENT_URL):
+                razorpay_url = RAZORPAY_PAYMENT_URL
+            elif is_valid_url(RAZORPAY_USD_PAYMENT_URL):
+                razorpay_url = RAZORPAY_USD_PAYMENT_URL
+            else:
+                razorpay_url = None
 
-                save_report_links(
-                    user_id,
-                    amount,
-                    report_links[user_id]["links"],
-                    region,
-                    paypal_order_id=order_id,
-                    paypal_approve_url=paypal_url,
-                    business_connection_id=business_conn_id
-                )
         download_button_text = "📥 Download Report"
-        payment_button = InlineKeyboardButton(
-            f"🚀Make Payment of {payment_amount}🚀",
-            url=razorpay_url if region == "indian" else paypal_url
-        )
         download_button = InlineKeyboardButton(download_button_text, callback_data=f"download_{user_id}")
-        keyboard = [[payment_button], [download_button]]
+
+        keyboard = []
+        if is_valid_url(razorpay_url):
+            payment_button = InlineKeyboardButton(
+                f"🚀Make Payment of {payment_amount}🚀",
+                url=razorpay_url
+            )
+            keyboard.append([payment_button])
+        keyboard.append([download_button])
         reply_markup = InlineKeyboardMarkup(keyboard)
 
         try:
@@ -888,7 +898,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             logger.info(f"Sent report downloader message to {user_id} via business connection")
         except Exception as conn_err:
-            logger.warning(f"Failed sending report downloader message to {user_id} via business connection: {conn_err}. Attempting direct send.")
+            logger.warning(
+                f"Failed sending report downloader message to {user_id} via business connection: {conn_err}. Attempting direct send.")
             await message.reply_text(
                 f"*🔰Report Downloader Bot🔰*"
                 f"\n\nTo download your report, follow these two steps:"
@@ -902,6 +913,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await message.reply_text("🚫 There is no information about your report. Please contact Admin @coding_services.")
 
+
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()  # Acknowledge the button press
@@ -912,47 +924,119 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     user_id = query.data.replace("download_", "")
-    await query.edit_message_text(f"♻️  Payment verifying. Please wait...")
-    report_links = load_report_links() # Refresh from Firebase
+
+    # Retrieve business connection ID to allow editing messages sent via business connection
+    business_conn_id = None
+    if query.message:
+        business_conn_id = getattr(query.message, 'business_connection_id', None)
+    if not business_conn_id:
+        report_links = load_report_links()
+        business_conn_id = report_links.get(str(user_id), {}).get("business_connection_id")
+    if not business_conn_id:
+        user_info = load_user_data().get(str(user_id), {})
+        business_conn_id = user_info.get("business_connection_id")
+
+    current_message_id = query.message.message_id if query.message else None
+
+    # Helper function to edit message text, passing business_connection_id
+    async def edit_msg(text, **kwargs):
+        nonlocal current_message_id
+        if query.message and current_message_id:
+            extra_args = {}
+            if business_conn_id:
+                extra_args["business_connection_id"] = business_conn_id
+            try:
+                return await context.bot.edit_message_text(
+                    chat_id=query.message.chat.id,
+                    message_id=current_message_id,
+                    text=text,
+                    **extra_args,
+                    **kwargs
+                )
+            except Exception as e:
+                logger.warning(
+                    f"Failed to edit message {current_message_id} with error: {e}. Falling back to send + delete.")
+                # Send the new message instead
+                new_msg = await context.bot.send_message(
+                    chat_id=query.message.chat.id,
+                    text=text,
+                    **extra_args,
+                    **kwargs
+                )
+                # Attempt to delete the old message to clean up the chat
+                try:
+                    await context.bot.delete_message(
+                        chat_id=query.message.chat.id,
+                        message_id=current_message_id,
+                        **extra_args
+                    )
+                except Exception as del_err:
+                    logger.warning(f"Failed to delete old message {current_message_id}: {del_err}")
+
+                if new_msg:
+                    current_message_id = new_msg.message_id
+                return new_msg
+        else:
+            return await query.edit_message_text(
+                text=text,
+                **kwargs
+            )
+
+    await edit_msg(f"♻️  Payment verifying. Please wait...")
+    report_links = load_report_links()  # Refresh from Firebase
     if user_id in report_links:
-        invoice_amount = int(report_links[user_id]['amount'])
-        region = report_links[user_id].get("region", "indian")
+        region = report_links[user_id].get('region', 'indian')
+        amount = report_links[user_id].get('amount')
 
         if region == "indian":
-            paid = verify_payment(user_id, invoice_amount)
-
+            payment_amount = f"Rs {amount}/-"
+            razorpay_url = RAZORPAY_PAYMENT_URL
         else:
-            order_id = report_links[user_id].get("paypal_order_id")
-            if not order_id:
-                await query.edit_message_text("❌ PayPal order not found. Please contact Admin.")
-                return
-            payment_details = capture_payment(order_id)
+            payment_amount = f"${amount}"
+            razorpay_url = RAZORPAY_USD_PAYMENT_URL
 
-            paid = (
-                    payment_details
-                    and payment_details.get("status") == "COMPLETED"
-                    and payment_details.get("user_id") == str(user_id)
-                    and float(payment_details.get("paid_amount")) == float(invoice_amount)
+        # Fallback to alternative env url if the selected one is invalid
+        if not is_valid_url(razorpay_url):
+            if is_valid_url(RAZORPAY_PAYMENT_URL):
+                razorpay_url = RAZORPAY_PAYMENT_URL
+            elif is_valid_url(RAZORPAY_USD_PAYMENT_URL):
+                razorpay_url = RAZORPAY_USD_PAYMENT_URL
+            else:
+                razorpay_url = None
+
+        download_button = InlineKeyboardButton("📥 Download Report", callback_data=f"download_{user_id}")
+        keyboard = []
+        if is_valid_url(razorpay_url):
+            payment_button = InlineKeyboardButton(
+                f"🚀Make Payment of {payment_amount}🚀",
+                url=razorpay_url
             )
+            keyboard.append([payment_button])
+        keyboard.append([download_button])
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        invoice_amount = int(amount)
+        # Both INR and USD regions are verified via the Razorpay payment gateway
+        paid = await verify_payment(user_id, invoice_amount)
 
         if paid:
             links_formatted = "\n".join(
                 [f"📥 File {i + 1}: {link}" for i, link in enumerate(report_links[user_id]["links"])])
-            await query.edit_message_text(
+            await edit_msg(
                 f"<b>🔰PAYMENT VERIFIED🔰</b>\n\n"
                 f"🙏Thank you for making the payment.\n\n"
                 f"✅ Download your report by clicking on the link below.\n\n"
                 f"<b>⬇️ Report Download Links:</b>\n{links_formatted}",
                 parse_mode="HTML"
             )
-            DELETED_CODES_URL = f"{PAYMENT_CAPTURED_DETAILS_URL}/amount/{invoice_amount}"
-            requests.delete(url=DELETED_CODES_URL)
 
-            # Try to get business connection ID from application memory or from database
-            # business_conn_id = context.application.bot_data.get(str(user_id))
-            # if not business_conn_id:
-            #     user_info = load_user_data().get(str(user_id), {})
-            #     business_conn_id = user_info.get("business_connection_id")
+            try:
+                DELETED_CODES_URL = f"{PAYMENT_CAPTURED_DETAILS_URL}/amount/{invoice_amount}"
+                response_del = requests.delete(url=DELETED_CODES_URL, timeout=5)
+                response_del.raise_for_status()
+                logger.info(f"Successfully deleted sheet entry for user {user_id}")
+            except Exception as del_err:
+                logger.warning(f"Failed to delete verified entry from SheetDB: {del_err}")
 
             # Get the business connection ID from the report data (which we saved in Firestore)
             business_conn_id = report_links.get(str(user_id), {}).get("business_connection_id")
@@ -972,7 +1056,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 logger.info(f"Sent join & share message to {user_id} via business connection")
             except Exception as conn_err:
-                logger.warning(f"Failed sending join & share message to {user_id} via business connection: {conn_err}. Attempting direct send.")
+                logger.warning(
+                    f"Failed sending join & share message to {user_id} via business connection: {conn_err}. Attempting direct send.")
                 # Fallback to direct send
                 await context.bot.send_message(
                     chat_id=user_id,
@@ -988,15 +1073,17 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             load_report_links()  # Refresh from Firebase
 
         else:
-            start_button_text = "🚀Click here to Pay🚀"
-            start_button = InlineKeyboardButton(start_button_text, callback_data=f"start_{user_id}")
-            keyboard = [[start_button]]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            await query.edit_message_text("<b>🔰PAYMENT NOT RECEIVED🔰</b>\n\n"
-                                           "We have not received your payment. Please first make the payment then click on Download Report button.\n\n"
-                                           "✅ Need help? Please contact to Admin @coding_services.", parse_mode="HTML", reply_markup=reply_markup)
+            await edit_msg(
+                f"<b>❌ PAYMENT NOT VERIFIED YET ❌</b>\n\n"
+                f"We could not verify your payment of <b>{payment_amount}</b> at this moment.\n\n"
+                f"1️⃣ If you have not paid yet, please make the payment first using the button below.\n"
+                f"2️⃣ If you have already paid, it may take 1-2 minutes to register. Please try clicking <b>📥 Download Report</b> again in a few moments.\n\n"
+                f"✅ Need help? Contact Admin @coding_services.",
+                parse_mode="HTML",
+                reply_markup=reply_markup
+            )
     else:
-        await query.edit_message_text("⭕️ Your report is not ready. Please wait for some time!")
+        await edit_msg("⭕️ Your report is not ready. Please wait for some time!")
 
 
 # ------------------ Admin Command: Show Reports ------------------ #
@@ -1040,6 +1127,7 @@ async def show_reports(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     return WAITING_FOR_DELETE_ID
 
+
 async def delete_user_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.text.strip()
     report_links = load_report_links()  # Refresh from Firebase
@@ -1050,6 +1138,7 @@ async def delete_user_report(update: Update, context: ContextTypes.DEFAULT_TYPE)
     else:
         await update.message.reply_text(f"⚠️ No data found for user ID {user_id}.")
     return ConversationHandler.END
+
 
 # ------------------ Admin Command: Show Users ------------------ #
 async def show_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1079,6 +1168,7 @@ async def show_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     return WAITING_FOR_DELETE_USER_ID
 
+
 async def delete_user_by_chat_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id_to_delete = update.message.text.strip()
     users = load_user_data()
@@ -1091,6 +1181,7 @@ async def delete_user_by_chat_id(update: Update, context: ContextTypes.DEFAULT_T
 
     await update.message.reply_text(f"⚠️ No user found with business_chat_id {chat_id_to_delete}.")
     return ConversationHandler.END
+
 
 # ------------------ Help Command ------------------ #
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1105,6 +1196,7 @@ Commands available:
 /help - Show this help message
 """
     )
+
 
 async def main():
     """ Main function to start the bot """
@@ -1211,7 +1303,6 @@ async def main():
     application.add_handler(conv_handler_show_users)
     application.add_handler(CallbackQueryHandler(button_handler))
 
-
     # application.run_polling()
 
     await application.initialize()
@@ -1248,6 +1339,7 @@ async def main():
     )  # 🔥 KEEP RUNNING
 
     await asyncio.Event().wait()
+
 
 if __name__ == "__main__":
     asyncio.run(main())
