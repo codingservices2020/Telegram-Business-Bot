@@ -9,24 +9,17 @@ import uuid
 import asyncio
 import fitz  # PyMuPDF
 from PyPDF2 import PdfReader, PdfWriter  # Required for sign_pdf
-from firebase_db import save_report_links, load_report_links, remove_report_links, save_user_data, load_user_data, \
-    get_latest_users, remove_user_data
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, ReplyKeyboardRemove, \
-    ReplyParameters
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, ConversationHandler, \
-    CallbackQueryHandler  # , CallbackContext, TypeHandler
+from firebase_db import save_report_links, load_report_links, remove_report_links, save_user_data, load_user_data, get_latest_users, remove_user_data
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, ReplyParameters
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, ConversationHandler, CallbackQueryHandler#, CallbackContext, TypeHandler
 from google_drive_files import upload_and_get_link
 # from paypal import create_paypal_payment_link, capture_payment
-
-
 import warnings
 from keep_alive import keep_alive
-
 keep_alive()
 
-from dotenv import load_dotenv
-
-load_dotenv()
+# from dotenv import load_dotenv
+# load_dotenv()
 
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 # Enable logging to both console and a file
@@ -52,7 +45,7 @@ ADMIN_ID = int(os.getenv("ADMIN_ID"))
 RAZORPAY_PAYMENT_URL = os.getenv('RAZORPAY_PAYMENT_URL')
 RAZORPAY_USD_PAYMENT_URL = os.getenv('RAZORPAY_USD_PAYMENT_URL') or os.getenv('RAZORPAY_PAYMENT_URL')
 PAYPAL_PAYMENT_URL = os.getenv('PAYPAL_PAYMENT_URL')
-PAYMENT_CAPTURED_DETAILS_URL = os.getenv("PAYMENT_CAPTURED_DETAILS_URL")
+PAYMENT_CAPTURED_DETAILS_URL= os.getenv("PAYMENT_CAPTURED_DETAILS_URL")
 PAYPAL_API_BASE = os.getenv('PAYPAL_API_BASE')
 PAYPAL_CLIENT_ID = os.getenv('PAYPAL_CLIENT_ID')
 PAYPAL_SECRET = os.getenv('PAYPAL_SECRET')
@@ -80,10 +73,12 @@ WAITING_FOR_DELETE_USER_ID = 108  # for /show_users command
 WAITING_FOR_SIGN_CONFIRMATION = 109
 WAITING_FOR_REGION = 110  # Update the states to include region selection
 
+
+
+
 # Load existing file data or initialize an empty dictionary
 DATA_FILE = "file_data.json"
 report_links = {}
-active_conversations = {}
 # Define folders for input and edited PDFs
 INPUT_FOLDER = "input_pdfs"
 OUTPUT_FOLDER = "edited_pdfs"
@@ -97,6 +92,9 @@ code = None
 # Define the cancel button
 CANCEL_BUTTON = "🚫 Cancel"
 START_BUTTON = "🤖 Start the Bot"
+UPLOAD_BUTTON = "⬆️ Upload"
+SHOW_REPORTS_BUTTON = "📜 Show Reports"
+SHOW_USERS_BUTTON = "👥 Show Users"
 
 
 def is_valid_url(url):
@@ -110,12 +108,10 @@ except Exception as e:
     print(f"Error loading report links from Firebase at startup: {e}")
     report_links = {}
 
-
 def save_data():
     """Save the file data to JSON."""
     with open(DATA_FILE, "w") as f:
         json.dump(report_links, f, indent=4)
-
 
 def edit_pdf(input_pdf, output_pdf, output_pdf_name, selected_text, do_sign):
     doc = fitz.open(input_pdf)
@@ -173,6 +169,7 @@ def edit_pdf(input_pdf, output_pdf, output_pdf_name, selected_text, do_sign):
     doc.close()
 
 
+
 def sign_pdf(pdf_file_path):
     reader = PdfReader(pdf_file_path)
     writer = PdfWriter()
@@ -189,20 +186,18 @@ def sign_pdf(pdf_file_path):
 
     return signed_pdf_path
 
-
 async def verify_payment(chat_id, payment_amount):
     max_retries = 3
     retry_delay = 2.0  # seconds
-
+    
     for attempt in range(max_retries):
         try:
-            logger.info(
-                f"Verifying payment for chat_id={chat_id}, amount={payment_amount} (attempt {attempt + 1}/{max_retries})")
+            logger.info(f"Verifying payment for chat_id={chat_id}, amount={payment_amount} (attempt {attempt + 1}/{max_retries})")
             async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await client.get(PAYMENT_CAPTURED_DETAILS_URL)
                 response.raise_for_status()
                 data = response.json()
-
+                
                 if isinstance(data, list):
                     for entry in data:
                         if entry.get('user_id') == str(chat_id):
@@ -214,18 +209,16 @@ async def verify_payment(chat_id, payment_amount):
         except httpx.HTTPStatusError as err:
             logger.warning(f"HTTP error during payment verification (attempt {attempt + 1}/{max_retries}): {err}")
         except httpx.RequestError as err:
-            logger.warning(
-                f"Request error / SSL error during payment verification (attempt {attempt + 1}/{max_retries}): {err}")
-
+            logger.warning(f"Request error / SSL error during payment verification (attempt {attempt + 1}/{max_retries}): {err}")
+        
         if attempt < max_retries - 1:
             await asyncio.sleep(retry_delay)
-
+            
     logger.error("Max retries exceeded or error occurred during payment verification.")
     return False
 
-
 def shorten_url(long_url):
-    BASE_URL = "https://api.short.io/links/"  # Short.io API Endpoint
+    BASE_URL="https://api.short.io/links/"     # Short.io API Endpoint
     # Headers
     headers = {
         "Authorization": SHORTIO_LINK_API_KEY,
@@ -289,15 +282,98 @@ def process_all_files(context, do_sign):
 
     return processed_files
 
+def build_reply_keyboard(buttons, one_time_keyboard=False, is_persistent=False):
+    """Create a reply keyboard while staying compatible with older PTB versions."""
+    try:
+        return ReplyKeyboardMarkup(
+            buttons,
+            resize_keyboard=True,
+            one_time_keyboard=one_time_keyboard,
+            is_persistent=is_persistent
+        )
+    except TypeError:
+        return ReplyKeyboardMarkup(
+            buttons,
+            resize_keyboard=True,
+            one_time_keyboard=one_time_keyboard
+        )
 
-# Function to create a reply keyboard with a Cancel button
+
+def get_admin_keyboard():
+    return build_reply_keyboard(
+        [
+            [UPLOAD_BUTTON, SHOW_REPORTS_BUTTON],
+            [SHOW_USERS_BUTTON, CANCEL_BUTTON],
+        ],
+        is_persistent=True
+    )
+
+
 def get_cancel_keyboard():
-    return ReplyKeyboardMarkup([[CANCEL_BUTTON]], resize_keyboard=True, one_time_keyboard=True)
+    return build_reply_keyboard([[CANCEL_BUTTON]], is_persistent=True)
 
 
-# Function to create a reply keyboard with a Cancel button
 def get_start_keyboard():
-    return ReplyKeyboardMarkup([[START_BUTTON]], resize_keyboard=True, one_time_keyboard=True)
+    return build_reply_keyboard([[START_BUTTON]], one_time_keyboard=True)
+
+
+def inline_button(text, style=None, **kwargs):
+    if style:
+        kwargs["api_kwargs"] = {**kwargs.get("api_kwargs", {}), "style": style}
+    return InlineKeyboardButton(text, **kwargs)
+
+
+def remove_temp_file(file_path):
+    if not file_path:
+        return
+
+    safe_roots = [
+        os.path.abspath("downloads"),
+        os.path.abspath(INPUT_FOLDER),
+        os.path.abspath(OUTPUT_FOLDER),
+    ]
+    abs_path = os.path.abspath(file_path)
+    if any(abs_path == root or abs_path.startswith(root + os.sep) for root in safe_roots):
+        try:
+            if os.path.exists(abs_path):
+                os.remove(abs_path)
+        except OSError as e:
+            logger.warning(f"Failed to remove temporary file {abs_path}: {e}")
+
+
+def cleanup_conversation_state(context):
+    raw_files = context.user_data.get("raw_files", [])
+    processed_files = context.user_data.get("files", [])
+    single_file = context.user_data.get("file_path")
+
+    for file_path in raw_files:
+        remove_temp_file(file_path)
+    for file_path, _ in processed_files:
+        remove_temp_file(file_path)
+    remove_temp_file(single_file)
+
+    context.user_data.clear()
+
+
+async def restore_admin_keyboard(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
+    chat_id = update.effective_chat.id if update.effective_chat else ADMIN_ID
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=text,
+        reply_markup=get_admin_keyboard()
+    )
+
+
+async def cancel_current_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user and update.effective_user.id != ADMIN_ID:
+        return ConversationHandler.END
+
+    cleanup_conversation_state(context)
+    await update.message.reply_text(
+        "🚫 Current process cancelled.",
+        reply_markup=get_admin_keyboard()
+    )
+    return ConversationHandler.END
 
 
 async def handle_all_updates(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -386,12 +462,10 @@ async def handle_all_updates(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 logger.error(f"Failed to notify admin of error: {notify_err}")
 
 
-# Add a new function to handle cancellation of the upload process
+
 async def cancel_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Cancel the upload process and reset the conversation state."""
-    active_conversations[update.message.chat_id] = False
-    await update.message.reply_text("⬆️ Upload process cancelled. You can start over with /upload.")
-    return ConversationHandler.END
+    """Cancel the current admin conversation and reset state."""
+    return await cancel_current_conversation(update, context)
 
 
 async def upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -400,7 +474,7 @@ async def upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
     # Clear any old data from previous sessions
-    context.user_data.clear()
+    cleanup_conversation_state(context)
 
     # Ask for region first
     keyboard = [
@@ -415,6 +489,10 @@ async def upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "2. 🌍 Non-Indian - Use Razorpay (USD) for payment",
         reply_markup=reply_markup,
         parse_mode="Markdown"
+    )
+    await update.message.reply_text(
+        "Upload mode is active.",
+        reply_markup=get_cancel_keyboard()
     )
 
     return WAITING_FOR_REGION
@@ -434,19 +512,15 @@ async def handle_region_selection(update: Update, context: ContextTypes.DEFAULT_
         context.user_data["payment_url"] = RAZORPAY_USD_PAYMENT_URL
         region_text = "🌍 Non-Indian (Razorpay USD)"
 
-    cancel_markup = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🚫 Cancel", callback_data="cancel_upload")]
-    ])
     await query.edit_message_text(f"✅ Region selected: {region_text}\n\n"
                                   "♻️ Upload Process has Started...",
-                                  # reply_markup=cancel_markup,
                                   parse_mode="Markdown")
 
     # Now show file upload options
     keyboard = [
-        [InlineKeyboardButton("📁 One File", callback_data="upload_1")],
-        [InlineKeyboardButton("📂 Two Files", callback_data="upload_2")],
-        [InlineKeyboardButton("📦 More than Two Files", callback_data="upload_more")]
+        [inline_button("📁 One File", callback_data="upload_1", style="success")],
+        [inline_button("📂 Two Files", callback_data="upload_2", style="primary")],
+        [inline_button("📦 More than Two Files", callback_data="upload_more", style="danger")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
@@ -458,17 +532,9 @@ async def handle_region_selection(update: Update, context: ContextTypes.DEFAULT_
 
     return WAITING_FOR_UPLOAD_OPTION
 
-
-# Handle the Cancel button
 async def handle_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle the Cancel button press."""
-    active_conversations[update.message.chat_id] = False
-    await update.message.reply_text(
-        "Upload process cancelled.",
-        reply_markup=ReplyKeyboardRemove()  # Remove the custom keyboard
-    )
-    return ConversationHandler.END
-
+    """Handle the admin Cancel button."""
+    return await cancel_current_conversation(update, context)
 
 async def upload_option_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -486,10 +552,8 @@ async def upload_option_handler(update: Update, context: ContextTypes.DEFAULT_TY
         await query.edit_message_text("✳️ Please enter how many files you want to upload (must be a number > 2):")
         return WAITING_FOR_MULTIPLE_FILES
 
-
 async def ask_file_count(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_input = update.message.text.strip()
-    active_conversations[update.message.chat_id] = True
     if not user_input.isdigit() or int(user_input) <= 2:
         await update.message.reply_text("❌ Please enter a number greater than 2.")
         return WAITING_FOR_MULTIPLE_FILES
@@ -501,7 +565,6 @@ async def ask_file_count(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_multiple_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
     document = update.message.document
-    active_conversations[update.message.chat_id] = True
 
     if not document:
         await update.message.reply_text("Please send a valid file.")
@@ -535,16 +598,16 @@ async def handle_multiple_files(update: Update, context: ContextTypes.DEFAULT_TY
     return COLLECTING_FILES
 
 
+
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """ Handle file upload from users """
     document = update.message.document
-    active_conversations[update.message.chat_id] = True
     if not document:
         await update.message.reply_text("No document detected. Please try again.")
         return WAITING_FOR_UPLOAD_OPTION
     await update.message.reply_text(
         "♻️ Uploading Report ....",
-        reply_markup=ReplyKeyboardRemove()  # Remove the keyboard
+        reply_markup=get_cancel_keyboard()
     )
     logger.info(f"Received file: {document.file_name}")  # Debugging log
 
@@ -566,7 +629,6 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     return WAITING_FOR_PAYMENT
 
-
 async def receive_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global code
     """ Receive payment amount and prompt for user ID """
@@ -576,7 +638,6 @@ async def receive_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(
         f"Suggestions loaded: {suggestions}"
     )
-    active_conversations[update.message.chat_id] = True
     context.user_data["amount"] = amount
     buttons = [[InlineKeyboardButton(f"{name} ({uid})", callback_data=f"user_select|{uid}|{name}")]
                for uid, name in suggestions]
@@ -588,7 +649,6 @@ async def receive_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=reply_markup
     )
     return WAITING_FOR_NAME
-
 
 async def receive_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     name = update.message.text.strip()
@@ -630,14 +690,18 @@ async def handle_sign_confirmation(update: Update, context: ContextTypes.DEFAULT
         processed_files = process_all_files(context, do_sign)
 
         if not processed_files:
-            await query.edit_message_text("❌ No files could be processed. Please restart with /upload.")
+            cleanup_conversation_state(context)
+            await query.edit_message_text("❌ No files could be processed.")
+            await restore_admin_keyboard(update, context, "Admin keyboard restored.")
             return ConversationHandler.END
 
         context.user_data["files"] = processed_files
         logger.info(f"DEBUG: Processed {len(processed_files)} files with do_sign={do_sign}")
     except Exception as e:
         logger.error(f"Error processing files: {e}")
-        await query.edit_message_text("❌ Error processing files. Please restart with /upload.")
+        cleanup_conversation_state(context)
+        await query.edit_message_text("❌ Error processing files.")
+        await restore_admin_keyboard(update, context, "Admin keyboard restored.")
         return ConversationHandler.END
 
     # 🔥 DIRECTLY CONTINUE (NO USER ID QUESTION)
@@ -692,8 +756,10 @@ async def receive_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not user_id:
         await context.bot.send_message(
             chat_id=chat_id,
-            text="❌ User ID not found. Please restart with /upload."
+            text="❌ User ID not found.",
+            reply_markup=get_admin_keyboard()
         )
+        cleanup_conversation_state(context)
         return ConversationHandler.END
 
     # Use the cached business connection ID first; fallback to database lookup if not cached
@@ -711,14 +777,16 @@ async def receive_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if "files" not in context.user_data or not context.user_data["files"]:
         await context.bot.send_message(
             chat_id=chat_id,
-            text="🚫 No files found. Please restart with /upload."
+            text="🚫 No files found.",
+            reply_markup=get_admin_keyboard()
         )
+        cleanup_conversation_state(context)
         return ConversationHandler.END
 
     await context.bot.send_message(
         chat_id=chat_id,
         text="♻️ Uploading file to Google Drive...",
-        reply_markup=ReplyKeyboardRemove()
+        reply_markup=get_cancel_keyboard()
     )
 
     links = []
@@ -728,7 +796,12 @@ async def receive_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
             links.append(link)
 
     if not links:
-        await context.bot.send_message(chat_id=chat_id, text="❌ Upload failed.")
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text="❌ Upload failed.",
+            reply_markup=get_admin_keyboard()
+        )
+        cleanup_conversation_state(context)
         return ConversationHandler.END
 
     # short_links =
@@ -743,8 +816,7 @@ async def receive_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
             print(f"URL shortener failed: {short}")
             short_links.append(link)  # use original Google Drive link
 
-    save_report_links(user_id, amount, short_links, region,
-                      business_connection_id=business_conn_id)  # Update this function to store region
+    save_report_links(user_id, amount, short_links, region, business_connection_id=business_conn_id)  # Update this function to store region
 
     global report_links
     report_links = load_report_links()
@@ -766,13 +838,15 @@ async def receive_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"💰 <b>Amount:</b> {payment_amount}\n\n"
             f"<b>⬇️ Report Download Links:</b>\n{links_formatted}"
         ),
-        parse_mode="HTML"
+        parse_mode="HTML",
+        reply_markup=get_admin_keyboard()
     )
 
     # Unify payment flow using Razorpay (INR or USD)
-    payment_button = InlineKeyboardButton(
+    payment_button = inline_button(
         f"🚀Click here to Pay {payment_amount}🚀",
-        callback_data=f"start_{user_id}"
+        callback_data=f"start_{user_id}",
+        style="success"
     )
 
     reply_markup = InlineKeyboardMarkup([[payment_button]])
@@ -789,8 +863,7 @@ async def receive_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         logger.info(f"Sent report ready message to {user_id} via business connection")
     except Exception as conn_err:
-        logger.warning(
-            f"Failed sending report ready message to {user_id} via business connection: {conn_err}. Attempting direct send.")
+        logger.warning(f"Failed sending report ready message to {user_id} via business connection: {conn_err}. Attempting direct send.")
         # Fallback to direct send
         await context.bot.send_message(
             chat_id=user_id,
@@ -802,8 +875,8 @@ async def receive_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         logger.info(f"Sent report ready message to {user_id} directly (fallback)")
     # remove_user_data(user_id)
+    cleanup_conversation_state(context)
     return ConversationHandler.END
-
 
 async def upload_to_drive(file_path, user_name, user_id):
     """
@@ -823,6 +896,8 @@ async def upload_to_drive(file_path, user_name, user_id):
     except Exception as e:
         logger.error(f"❌ Error uploading file to Google Drive: {e}")
         return None
+
+
 
 
 # ------------------ Start Command ------------------ #
@@ -869,13 +944,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 razorpay_url = None
 
         download_button_text = "📥 Download Report"
-        download_button = InlineKeyboardButton(download_button_text, callback_data=f"download_{user_id}")
-
+        download_button = inline_button(
+            download_button_text,
+            callback_data=f"download_{user_id}",
+            style="primary"
+        )
+        
         keyboard = []
         if is_valid_url(razorpay_url):
-            payment_button = InlineKeyboardButton(
+            payment_button = inline_button(
                 f"🚀Make Payment of {payment_amount}🚀",
-                url=razorpay_url
+                url=razorpay_url,
+                style="success"
             )
             keyboard.append([payment_button])
         keyboard.append([download_button])
@@ -898,8 +978,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             logger.info(f"Sent report downloader message to {user_id} via business connection")
         except Exception as conn_err:
-            logger.warning(
-                f"Failed sending report downloader message to {user_id} via business connection: {conn_err}. Attempting direct send.")
+            logger.warning(f"Failed sending report downloader message to {user_id} via business connection: {conn_err}. Attempting direct send.")
             await message.reply_text(
                 f"*🔰Report Downloader Bot🔰*"
                 f"\n\nTo download your report, follow these two steps:"
@@ -911,8 +990,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode="Markdown"
             )
     else:
-        await message.reply_text("🚫 There is no information about your report. Please contact Admin @coding_services.")
-
+        if chat_id == ADMIN_ID:
+            await message.reply_text(
+                "Admin keyboard is ready.",
+                reply_markup=get_admin_keyboard()
+            )
+        else:
+            await message.reply_text("🚫 There is no information about your report. Please contact Admin @coding_services.")
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -954,8 +1038,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     **kwargs
                 )
             except Exception as e:
-                logger.warning(
-                    f"Failed to edit message {current_message_id} with error: {e}. Falling back to send + delete.")
+                logger.warning(f"Failed to edit message {current_message_id} with error: {e}. Falling back to send + delete.")
                 # Send the new message instead
                 new_msg = await context.bot.send_message(
                     chat_id=query.message.chat.id,
@@ -972,7 +1055,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     )
                 except Exception as del_err:
                     logger.warning(f"Failed to delete old message {current_message_id}: {del_err}")
-
+                
                 if new_msg:
                     current_message_id = new_msg.message_id
                 return new_msg
@@ -983,7 +1066,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
 
     await edit_msg(f"♻️  Payment verifying. Please wait...")
-    report_links = load_report_links()  # Refresh from Firebase
+    report_links = load_report_links() # Refresh from Firebase
     if user_id in report_links:
         region = report_links[user_id].get('region', 'indian')
         amount = report_links[user_id].get('amount')
@@ -1004,12 +1087,17 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 razorpay_url = None
 
-        download_button = InlineKeyboardButton("📥 Download Report", callback_data=f"download_{user_id}")
+        download_button = inline_button(
+            "📥 Download Report",
+            callback_data=f"download_{user_id}",
+            style="primary"
+        )
         keyboard = []
         if is_valid_url(razorpay_url):
-            payment_button = InlineKeyboardButton(
+            payment_button = inline_button(
                 f"🚀Make Payment of {payment_amount}🚀",
-                url=razorpay_url
+                url=razorpay_url,
+                style="success"
             )
             keyboard.append([payment_button])
         keyboard.append([download_button])
@@ -1029,7 +1117,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"<b>⬇️ Report Download Links:</b>\n{links_formatted}",
                 parse_mode="HTML"
             )
-
+            
             try:
                 DELETED_CODES_URL = f"{PAYMENT_CAPTURED_DETAILS_URL}/amount/{invoice_amount}"
                 response_del = requests.delete(url=DELETED_CODES_URL, timeout=5)
@@ -1056,8 +1144,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 logger.info(f"Sent join & share message to {user_id} via business connection")
             except Exception as conn_err:
-                logger.warning(
-                    f"Failed sending join & share message to {user_id} via business connection: {conn_err}. Attempting direct send.")
+                logger.warning(f"Failed sending join & share message to {user_id} via business connection: {conn_err}. Attempting direct send.")
                 # Fallback to direct send
                 await context.bot.send_message(
                     chat_id=user_id,
@@ -1091,12 +1178,15 @@ async def show_reports(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     if user_id != ADMIN_ID:
         await update.message.reply_text("🚫 You are not authorized to use this command.")
-        return
+        return ConversationHandler.END
 
     report_links = load_report_links()  # Refresh from Firebase
     if not report_links:
-        await update.message.reply_text("📭 No pending reports found.")
-        return
+        await update.message.reply_text(
+            "📭 No pending reports found.",
+            reply_markup=get_admin_keyboard()
+        )
+        return ConversationHandler.END
 
     messages = []
     users = load_user_data()
@@ -1123,10 +1213,10 @@ async def show_reports(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📜 <b>Not Downloaded Reports:</b>\n\n{final_report}\n"
         f"✂️ <b>To delete a report, send the User ID now.</b>",
         parse_mode="HTML",
-        disable_web_page_preview=True
+        disable_web_page_preview=True,
+        reply_markup=get_admin_keyboard()
     )
     return WAITING_FOR_DELETE_ID
-
 
 async def delete_user_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.text.strip()
@@ -1134,23 +1224,31 @@ async def delete_user_report(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if user_id in report_links:
         remove_report_links(user_id)
         load_report_links()  # Refresh from Firebase
-        await update.message.reply_text(f"🗑️ Report data for user ID {user_id} has been deleted.")
+        await update.message.reply_text(
+            f"🗑️ Report data for user ID {user_id} has been deleted.",
+            reply_markup=get_admin_keyboard()
+        )
     else:
-        await update.message.reply_text(f"⚠️ No data found for user ID {user_id}.")
+        await update.message.reply_text(
+            f"⚠️ No data found for user ID {user_id}.",
+            reply_markup=get_admin_keyboard()
+        )
     return ConversationHandler.END
-
 
 # ------------------ Admin Command: Show Users ------------------ #
 async def show_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     if user_id != ADMIN_ID:
         await update.message.reply_text("🚫 You are not authorized to use this command.")
-        return
+        return ConversationHandler.END
 
     users = load_user_data()
     if not users:
-        await update.message.reply_text("📭 No users found in the database.")
-        return
+        await update.message.reply_text(
+            "📭 No users found in the database.",
+            reply_markup=get_admin_keyboard()
+        )
+        return ConversationHandler.END
 
     messages = []
     for uid, info in users.items():
@@ -1163,11 +1261,11 @@ async def show_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"📋 <b>Users who sent their articles recently:</b>\n\n{final_msg}\n"
         f"✂️ <b>To delete a user, send their business_chat_id now.</b>",
-        parse_mode="HTML"
+        parse_mode="HTML",
+        reply_markup=get_admin_keyboard()
     )
 
     return WAITING_FOR_DELETE_USER_ID
-
 
 async def delete_user_by_chat_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id_to_delete = update.message.text.strip()
@@ -1176,15 +1274,21 @@ async def delete_user_by_chat_id(update: Update, context: ContextTypes.DEFAULT_T
     for uid, info in users.items():
         if str(info.get("business_chat_id")) == chat_id_to_delete:
             remove_user_data(uid)
-            await update.message.reply_text(f"🗑️ User with business_chat_id {chat_id_to_delete} has been deleted.")
+            await update.message.reply_text(
+                f"🗑️ User with business_chat_id {chat_id_to_delete} has been deleted.",
+                reply_markup=get_admin_keyboard()
+            )
             return ConversationHandler.END
 
-    await update.message.reply_text(f"⚠️ No user found with business_chat_id {chat_id_to_delete}.")
+    await update.message.reply_text(
+        f"⚠️ No user found with business_chat_id {chat_id_to_delete}.",
+        reply_markup=get_admin_keyboard()
+    )
     return ConversationHandler.END
-
 
 # ------------------ Help Command ------------------ #
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    reply_markup = get_admin_keyboard() if update.effective_user and update.effective_user.id == ADMIN_ID else None
     await update.message.reply_text(
         """
 Commands available:
@@ -1194,13 +1298,19 @@ Commands available:
 /show_reports - Show list of all reports not downloaded by users (Admin only)
 /show_users - Show all users who sent their articles recently (Admin only)
 /help - Show this help message
-"""
+""",
+        reply_markup=reply_markup
     )
-
 
 async def main():
     """ Main function to start the bot """
     application = Application.builder().token(TOKEN).build()
+    admin_button_filter = filters.Text([
+        UPLOAD_BUTTON,
+        SHOW_REPORTS_BUTTON,
+        SHOW_USERS_BUTTON,
+        CANCEL_BUTTON,
+    ])
 
     # Attach business update handler in a separate group so it doesn’t block others
     application.add_handler(
@@ -1213,43 +1323,47 @@ async def main():
 
     # Upload file conversation handler
     conv_handler_upload = ConversationHandler(
-        entry_points=[CommandHandler("upload", upload)],
+        entry_points=[
+            CommandHandler("upload", upload),
+            MessageHandler(filters.Text([UPLOAD_BUTTON]), upload),
+        ],
         states={
             WAITING_FOR_REGION: [
-                CallbackQueryHandler(handle_region_selection, pattern="^region_"),
                 MessageHandler(filters.Text([CANCEL_BUTTON]), handle_cancel),
+                CallbackQueryHandler(handle_region_selection, pattern="^region_"),
             ],
             WAITING_FOR_UPLOAD_OPTION: [
+                MessageHandler(filters.Text([CANCEL_BUTTON]), handle_cancel),
                 CallbackQueryHandler(upload_option_handler),
-                MessageHandler(filters.Text([CANCEL_BUTTON]), handle_cancel),  # Handle Cancel button
             ],
             WAITING_FOR_MULTIPLE_FILES: [
+                MessageHandler(filters.Text([CANCEL_BUTTON]), handle_cancel),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, ask_file_count),
-                MessageHandler(filters.Text([CANCEL_BUTTON]), handle_cancel),  # Handle Cancel button
             ],
             COLLECTING_FILES: [
+                MessageHandler(filters.Text([CANCEL_BUTTON]), handle_cancel),
                 MessageHandler(filters.Document.ALL, handle_multiple_files),
-                MessageHandler(filters.Text([CANCEL_BUTTON]), handle_cancel),  # Handle Cancel button
             ],
             WAITING_FOR_PAYMENT: [
+                MessageHandler(filters.Text([CANCEL_BUTTON]), handle_cancel),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, receive_payment),
-                MessageHandler(filters.Text([CANCEL_BUTTON]), handle_cancel),  # Handle Cancel button
             ],
             WAITING_FOR_NAME: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, receive_name),
-                CallbackQueryHandler(handle_user_suggestion, pattern=r'^user_select\|'),
                 MessageHandler(filters.Text([CANCEL_BUTTON]), handle_cancel),
+                CallbackQueryHandler(handle_user_suggestion, pattern=r'^user_select\|'),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, receive_name),
             ],
             WAITING_FOR_SIGN_CONFIRMATION: [
-                CallbackQueryHandler(handle_sign_confirmation, pattern="^sign_"),
                 MessageHandler(filters.Text([CANCEL_BUTTON]), handle_cancel),
+                CallbackQueryHandler(handle_sign_confirmation, pattern="^sign_"),
             ],
             WAITING_FOR_USER: [
+                MessageHandler(filters.Text([CANCEL_BUTTON]), handle_cancel),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, receive_user),
-                MessageHandler(filters.Text([CANCEL_BUTTON]), handle_cancel),  # Handle Cancel button
             ],
         },
         fallbacks=[
+            CommandHandler("cancel", handle_cancel),
             CommandHandler("start", start),  # Reset conversation if /start is issued
             CommandHandler("upload", upload),  # Reset conversation if /upload is issued again
             CommandHandler("help", help_command),  # Reset conversation if /help is issued
@@ -1260,13 +1374,18 @@ async def main():
 
     # Delete links conversation handler
     conv_handler_delete = ConversationHandler(
-        entry_points=[CommandHandler("show_reports", show_reports)],
+        entry_points=[
+            CommandHandler("show_reports", show_reports),
+            MessageHandler(filters.Text([SHOW_REPORTS_BUTTON]), show_reports),
+        ],
         states={
             WAITING_FOR_DELETE_ID: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, delete_user_report)
+                MessageHandler(filters.Text([CANCEL_BUTTON]), handle_cancel),
+                MessageHandler(filters.TEXT & ~filters.COMMAND & ~admin_button_filter, delete_user_report)
             ]
         },
         fallbacks=[
+            CommandHandler("cancel", handle_cancel),
             CommandHandler("start", start),  # Reset conversation if /start is issued
             CommandHandler("upload", upload),  # Reset conversation if /upload is issued again
             CommandHandler("help", help_command),  # Reset conversation if /help is issued
@@ -1276,13 +1395,18 @@ async def main():
     )
 
     conv_handler_show_users = ConversationHandler(
-        entry_points=[CommandHandler("show_users", show_users)],
+        entry_points=[
+            CommandHandler("show_users", show_users),
+            MessageHandler(filters.Text([SHOW_USERS_BUTTON]), show_users),
+        ],
         states={
             WAITING_FOR_DELETE_USER_ID: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, delete_user_by_chat_id)
+                MessageHandler(filters.Text([CANCEL_BUTTON]), handle_cancel),
+                MessageHandler(filters.TEXT & ~filters.COMMAND & ~admin_button_filter, delete_user_by_chat_id)
             ]
         },
         fallbacks=[
+            CommandHandler("cancel", handle_cancel),
             CommandHandler("start", start),
             CommandHandler("upload", upload),
             CommandHandler("help", help_command),
@@ -1301,7 +1425,10 @@ async def main():
     application.add_handler(conv_handler_upload)
     application.add_handler(conv_handler_delete)
     application.add_handler(conv_handler_show_users)
+    application.add_handler(CommandHandler("cancel", handle_cancel))
+    application.add_handler(MessageHandler(filters.Text([CANCEL_BUTTON]), handle_cancel))
     application.add_handler(CallbackQueryHandler(button_handler))
+
 
     # application.run_polling()
 
@@ -1339,7 +1466,6 @@ async def main():
     )  # 🔥 KEEP RUNNING
 
     await asyncio.Event().wait()
-
 
 if __name__ == "__main__":
     asyncio.run(main())
