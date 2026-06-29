@@ -13,7 +13,6 @@ from firebase_db import save_report_links, load_report_links, remove_report_link
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, ReplyParameters
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, ConversationHandler, CallbackQueryHandler#, CallbackContext, TypeHandler
 from google_drive_files import upload_and_get_link
-# from paypal import create_paypal_payment_link, capture_payment
 
 
 import warnings
@@ -46,11 +45,8 @@ GDRIVE_FOLDER_ID = os.getenv("GDRIVE_FOLDER_ID")
 ADMIN_ID = int(os.getenv("ADMIN_ID"))
 RAZORPAY_PAYMENT_URL = os.getenv('RAZORPAY_PAYMENT_URL')
 RAZORPAY_USD_PAYMENT_URL = os.getenv('RAZORPAY_USD_PAYMENT_URL') or os.getenv('RAZORPAY_PAYMENT_URL')
-PAYPAL_PAYMENT_URL = os.getenv('PAYPAL_PAYMENT_URL')
-PAYMENT_CAPTURED_DETAILS_URL= os.getenv("PAYMENT_CAPTURED_DETAILS_URL")
-PAYPAL_API_BASE = os.getenv('PAYPAL_API_BASE')
-PAYPAL_CLIENT_ID = os.getenv('PAYPAL_CLIENT_ID')
-PAYPAL_SECRET = os.getenv('PAYPAL_SECRET')
+PAYMENT_CAPTURED_DETAILS_URL = os.getenv('PAYMENT_CAPTURED_DETAILS_URL')
+
 
 # Load Google Drive API Credentials from environment variables
 SERVICE_ACCOUNT_INFO = {
@@ -102,8 +98,6 @@ SHOW_USERS_BUTTON = "👥 Show Users"
 def is_valid_url(url):
     """Check if the URL is non-empty, a string, and starts with a valid protocol."""
     return isinstance(url, str) and (url.startswith("http://") or url.startswith("https://"))
-
-
 try:
     report_links = load_report_links()
 except Exception as e:
@@ -475,9 +469,12 @@ async def upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("🚫 You are not authorized to use this command.")
         return ConversationHandler.END
 
+    await update.message.reply_text(
+        "♻️ Upload Process has Started...",
+        reply_markup=get_cancel_keyboard()
+    )
     # Clear any old data from previous sessions
     cleanup_conversation_state(context)
-
     # Ask for region first
     keyboard = [
         [InlineKeyboardButton("🇮🇳 Indian", callback_data="region_indian")],
@@ -492,11 +489,6 @@ async def upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=reply_markup,
         parse_mode="Markdown"
     )
-    await update.message.reply_text(
-        "Upload mode is active.",
-        reply_markup=get_cancel_keyboard()
-    )
-
     return WAITING_FOR_REGION
 
 
@@ -514,9 +506,7 @@ async def handle_region_selection(update: Update, context: ContextTypes.DEFAULT_
         context.user_data["payment_url"] = RAZORPAY_USD_PAYMENT_URL
         region_text = "🌍 Non-Indian (Razorpay USD)"
 
-    await query.edit_message_text(f"✅ Region selected: {region_text}\n\n"
-                                  "♻️ Upload Process has Started...",
-                                  parse_mode="Markdown")
+    await query.edit_message_text(f"✅ Region selected: {region_text}", parse_mode="Markdown")
 
     # Now show file upload options
     keyboard = [
