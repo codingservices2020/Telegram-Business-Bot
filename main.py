@@ -1,4 +1,31 @@
+import sys
+import subprocess
 import os
+
+# Auto-install dependencies if running in an environment that lacks them
+try:
+    import requests
+    import httpx
+    import fitz  # PyMuPDF
+    import PyPDF2
+    import telegram
+    import firebase_admin
+    import dotenv
+except ModuleNotFoundError:
+    print("Warning: Missing required packages. Installing dependencies...")
+    try:
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        req_path = os.path.join(script_dir, "requirements.txt")
+        try:
+            # Try with --break-system-packages (for uv and PEP 668 managed environments)
+            subprocess.check_call([sys.executable, "-m", "pip", "install", "-r", req_path, "--break-system-packages"])
+        except subprocess.CalledProcessError:
+            # Fallback for older python/pip versions
+            subprocess.check_call([sys.executable, "-m", "pip", "install", "-r", req_path])
+    except Exception as e:
+        print(f"Error installing dependencies: {e}", file=sys.stderr)
+        sys.exit(1)
+
 import json
 import logging
 # from locale import currency
@@ -48,19 +75,6 @@ RAZORPAY_USD_PAYMENT_URL = os.getenv('RAZORPAY_USD_PAYMENT_URL') or os.getenv('R
 PAYMENT_CAPTURED_DETAILS_URL = os.getenv('PAYMENT_CAPTURED_DETAILS_URL')
 
 
-# Load Google Drive API Credentials from environment variables
-SERVICE_ACCOUNT_INFO = {
-    "type": "service_account",
-    "project_id": os.getenv("GOOGLE_PROJECT_ID"),
-    "private_key_id": os.getenv("GOOGLE_PRIVATE_KEY_ID"),
-    "private_key": os.getenv("GOOGLE_PRIVATE_KEY", "").replace('\\n', '\n'),  # Convert \n into real newlines
-    "client_email": os.getenv("GOOGLE_CLIENT_EMAIL"),
-    "client_id": os.getenv("GOOGLE_CLIENT_ID"),
-    "auth_uri": os.getenv("GOOGLE_AUTH_URI"),
-    "token_uri": os.getenv("GOOGLE_TOKEN_URI"),
-    "auth_provider_x509_cert_url": os.getenv("GOOGLE_AUTH_PROVIDER_CERT"),
-    "client_x509_cert_url": os.getenv("GOOGLE_CLIENT_CERT_URL"),
-}
 # Define states for conversation handler
 WAITING_FOR_UPLOAD_OPTION, WAITING_FOR_MULTIPLE_FILES, COLLECTING_FILES = range(100, 103)
 WAITING_FOR_PAYMENT, WAITING_FOR_USER = range(103, 105)
@@ -365,10 +379,11 @@ async def cancel_current_conversation(update: Update, context: ContextTypes.DEFA
         return ConversationHandler.END
 
     cleanup_conversation_state(context)
-    await update.message.reply_text(
-        "🚫 Current process cancelled.",
-        reply_markup=get_admin_keyboard()
-    )
+    if update.effective_message:
+        await update.effective_message.reply_text(
+            "🚫 Current process cancelled.",
+            reply_markup=get_admin_keyboard()
+        )
     return ConversationHandler.END
 
 
@@ -782,16 +797,44 @@ async def receive_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     links = []
+    error_occurred = None
     for path, _ in context.user_data["files"]:
-        link = await upload_to_drive(path, name, user_id)
-        if link:
-            links.append(link)
+        try:
+            link = await upload_to_drive(path, name, user_id)
+            if link:
+                links.append(link)
+        except Exception as e:
+            error_occurred = e
+            break
 
     if not links:
+        err_msg = str(error_occurred) if error_occurred else "Unknown error"
+        admin_advice = ""
+        if "invalid_grant" in err_msg.lower() or "account not found" in err_msg.lower():
+            admin_advice = (
+                "\n\n🔑 *Authentication Issue Detected:*\n"
+                "Your primary Google service account has been deleted/disabled.\n\n"
+                "💡 *To fix this using your Firebase service account instead:*\n"
+                "1️⃣ Click this link to enable Google Drive API:\n"
+                "https://console.developers.google.com/apis/api/drive.googleapis.com/overview?project=1062559103\n"
+                "2️⃣ Share the Google Drive Folder `1uwXkwaltm_wjMhZ4f6U0tgCqqrvSYB5-` with your Firebase service account email:\n"
+                "`firebase-adminsdk-fbsvc@telegrambotdb-14fe7.iam.gserviceaccount.com` as an *Editor*."
+            )
+        elif "api has not been used" in err_msg.lower() or "disabled" in err_msg.lower():
+            admin_advice = (
+                "\n\n⚠️ *Drive API Disabled:*\n"
+                "Google Drive API has not been enabled in your Firebase project.\n\n"
+                "💡 *To fix this:*\n"
+                "1️⃣ Enable the API by visiting this link:\n"
+                "https://console.developers.google.com/apis/api/drive.googleapis.com/overview?project=1062559103\n"
+                "2️⃣ Share the Google Drive Folder `1uwXkwaltm_wjMhZ4f6U0tgCqqrvSYB5-` with your Firebase service account email:\n"
+                "`firebase-adminsdk-fbsvc@telegrambotdb-14fe7.iam.gserviceaccount.com` as an *Editor*."
+            )
         await context.bot.send_message(
             chat_id=chat_id,
-            text="❌ Upload failed.",
-            reply_markup=get_admin_keyboard()
+            text=f"❌ *Upload failed.*\n\nError Details: `{err_msg}`{admin_advice}",
+            reply_markup=get_admin_keyboard(),
+            parse_mode="Markdown"
         )
         cleanup_conversation_state(context)
         return ConversationHandler.END
@@ -887,7 +930,7 @@ async def upload_to_drive(file_path, user_name, user_id):
 
     except Exception as e:
         logger.error(f"❌ Error uploading file to Google Drive: {e}")
-        return None
+        raise e
 
 
 
@@ -905,6 +948,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         chat_id = update.message.from_user.id
         user_id = str(chat_id)
         message = update.message  # Use the message from the regular update
+
+    async def reply(text, **kwargs):
+        if message:
+            await message.reply_text(text, **kwargs)
+        else:
+            await context.bot.send_message(chat_id=chat_id, text=text, **kwargs)
 
     # Refresh report links from Firebase to ensure persistent data on Render/restarts
     global report_links
@@ -971,24 +1020,27 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.info(f"Sent report downloader message to {user_id} via business connection")
         except Exception as conn_err:
             logger.warning(f"Failed sending report downloader message to {user_id} via business connection: {conn_err}. Attempting direct send.")
-            await message.reply_text(
-                f"*🔰Report Downloader Bot🔰*"
-                f"\n\nTo download your report, follow these two steps:"
-                f"\n 1️⃣ First click on the button below and make the payment of {payment_amount}."
-                f"\n 2️⃣ After payment download the report."
-                f"\n\n Your User ID: `{user_id}` (tap to copy)\n\n"
-                f"✅ Use this User ID on {payment_method} Payment Gateway.",
+            await context.bot.send_message(
+                chat_id=user_id,
+                text=(
+                    f"*🔰Report Downloader Bot🔰*\n\n"
+                    f"To download your report, follow these two steps:\n"
+                    f" 1️⃣ First click on the button below and make the payment of {payment_amount}.\n"
+                    f" 2️⃣ After payment download the report.\n\n"
+                    f" Your User ID: `{user_id}` (tap to copy)\n\n"
+                    f"✅ Use this User ID on {payment_method} Payment Gateway."
+                ),
                 reply_markup=reply_markup,
                 parse_mode="Markdown"
             )
     else:
         if chat_id == ADMIN_ID:
-            await message.reply_text(
+            await reply(
                 "Admin keyboard is ready.",
                 reply_markup=get_admin_keyboard()
             )
         else:
-            await message.reply_text("🚫 There is no information about your report. Please contact Admin @coding_services.")
+            await reply("🚫 There is no information about your report. Please contact Admin @coding_services.")
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
