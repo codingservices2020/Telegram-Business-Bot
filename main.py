@@ -36,18 +36,22 @@ import uuid
 import asyncio
 import fitz  # PyMuPDF
 from PyPDF2 import PdfReader, PdfWriter  # Required for sign_pdf
-from firebase_db import save_report_links, load_report_links, remove_report_links, save_user_data, load_user_data, get_latest_users, remove_user_data
+from firebase_db import save_report_links, load_report_links, remove_report_links, save_user_data, load_user_data, \
+    get_latest_users, remove_user_data
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, ReplyParameters
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, ConversationHandler, CallbackQueryHandler#, CallbackContext, TypeHandler
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, ConversationHandler, \
+    CallbackQueryHandler  # , CallbackContext, TypeHandler
 from google_drive_files import upload_and_get_link
-
 
 import warnings
 from keep_alive import keep_alive
+
 keep_alive()
 
 from dotenv import load_dotenv
+
 load_dotenv()
+
 
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 # Enable logging to both console and a file
@@ -69,11 +73,13 @@ PDF_PASSWORD = os.getenv("PDF_PASSWORD")
 SIGN_TEXT_1 = os.getenv("SIGN_TEXT_1")
 URL = f'https://api.telegram.org/bot{TOKEN}/getUpdates'
 GDRIVE_FOLDER_ID = os.getenv("GDRIVE_FOLDER_ID")
-ADMIN_ID = int(os.getenv("ADMIN_ID"))
 RAZORPAY_PAYMENT_URL = os.getenv('RAZORPAY_PAYMENT_URL')
 RAZORPAY_USD_PAYMENT_URL = os.getenv('RAZORPAY_USD_PAYMENT_URL') or os.getenv('RAZORPAY_PAYMENT_URL')
 PAYMENT_CAPTURED_DETAILS_URL = os.getenv('PAYMENT_CAPTURED_DETAILS_URL')
-
+admin_id = os.getenv("ADMIN_ID")
+if not admin_id:
+    raise RuntimeError("ADMIN_ID is missing from .env")
+ADMIN_ID = int(admin_id)
 
 # Define states for conversation handler
 WAITING_FOR_UPLOAD_OPTION, WAITING_FOR_MULTIPLE_FILES, COLLECTING_FILES = range(100, 103)
@@ -84,9 +90,6 @@ WAITING_FOR_NAME = 107  # add this line
 WAITING_FOR_DELETE_USER_ID = 108  # for /show_users command
 WAITING_FOR_SIGN_CONFIRMATION = 109
 WAITING_FOR_REGION = 110  # Update the states to include region selection
-
-
-
 
 # Load existing file data or initialize an empty dictionary
 DATA_FILE = "file_data.json"
@@ -109,19 +112,24 @@ SHOW_REPORTS_BUTTON = "📜 Show Reports"
 SHOW_USERS_BUTTON = "👥 Show Users"
 
 
+
 def is_valid_url(url):
     """Check if the URL is non-empty, a string, and starts with a valid protocol."""
     return isinstance(url, str) and (url.startswith("http://") or url.startswith("https://"))
+
+
 try:
     report_links = load_report_links()
 except Exception as e:
     print(f"Error loading report links from Firebase at startup: {e}")
     report_links = {}
 
+
 def save_data():
     """Save the file data to JSON."""
     with open(DATA_FILE, "w") as f:
         json.dump(report_links, f, indent=4)
+
 
 def edit_pdf(input_pdf, output_pdf, output_pdf_name, selected_text, do_sign):
     doc = fitz.open(input_pdf)
@@ -179,7 +187,6 @@ def edit_pdf(input_pdf, output_pdf, output_pdf_name, selected_text, do_sign):
     doc.close()
 
 
-
 def sign_pdf(pdf_file_path):
     reader = PdfReader(pdf_file_path)
     writer = PdfWriter()
@@ -196,18 +203,20 @@ def sign_pdf(pdf_file_path):
 
     return signed_pdf_path
 
+
 async def verify_payment(chat_id, payment_amount):
     max_retries = 3
     retry_delay = 2.0  # seconds
-    
+
     for attempt in range(max_retries):
         try:
-            logger.info(f"Verifying payment for chat_id={chat_id}, amount={payment_amount} (attempt {attempt + 1}/{max_retries})")
+            logger.info(
+                f"Verifying payment for chat_id={chat_id}, amount={payment_amount} (attempt {attempt + 1}/{max_retries})")
             async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await client.get(PAYMENT_CAPTURED_DETAILS_URL)
                 response.raise_for_status()
                 data = response.json()
-                
+
                 if isinstance(data, list):
                     for entry in data:
                         if entry.get('user_id') == str(chat_id):
@@ -219,16 +228,18 @@ async def verify_payment(chat_id, payment_amount):
         except httpx.HTTPStatusError as err:
             logger.warning(f"HTTP error during payment verification (attempt {attempt + 1}/{max_retries}): {err}")
         except httpx.RequestError as err:
-            logger.warning(f"Request error / SSL error during payment verification (attempt {attempt + 1}/{max_retries}): {err}")
-        
+            logger.warning(
+                f"Request error / SSL error during payment verification (attempt {attempt + 1}/{max_retries}): {err}")
+
         if attempt < max_retries - 1:
             await asyncio.sleep(retry_delay)
-            
+
     logger.error("Max retries exceeded or error occurred during payment verification.")
     return False
 
+
 def shorten_url(long_url):
-    BASE_URL="https://api.short.io/links/"     # Short.io API Endpoint
+    BASE_URL = "https://api.short.io/links/"  # Short.io API Endpoint
     # Headers
     headers = {
         "Authorization": SHORTIO_LINK_API_KEY,
@@ -291,6 +302,7 @@ def process_all_files(context, do_sign):
     context.user_data.pop("file_names", None)
 
     return processed_files
+
 
 def build_reply_keyboard(buttons, one_time_keyboard=False, is_persistent=False):
     """Create a reply keyboard while staying compatible with older PTB versions."""
@@ -388,7 +400,31 @@ async def cancel_current_conversation(update: Update, context: ContextTypes.DEFA
 
 
 async def handle_all_updates(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logger.info(f"Received update: {update.to_dict()}")
+    # logger.info(f"Received update: {update.to_dict()}")
+    async def handle_all_updates(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+        logger.info("=" * 80)
+        logger.info("🔥 handle_all_updates() CALLED")
+        logger.info(f"Update ID: {update.update_id}")
+
+        if update.business_message:
+            logger.info("✅ THIS IS A BUSINESS MESSAGE")
+            logger.info(f"Business connection ID: {update.business_message.business_connection_id}")
+            logger.info(f"Chat ID: {update.business_message.chat.id}")
+            logger.info(f"User: {update.business_message.chat.full_name}")
+            logger.info(f"Username: {update.business_message.chat.username}")
+            logger.info(f"Document: {update.business_message.document}")
+
+        elif update.message:
+            logger.info("📨 THIS IS A NORMAL MESSAGE")
+            logger.info(f"Chat ID: {update.message.chat.id}")
+            logger.info(f"Document: {update.message.document}")
+
+        else:
+            logger.info("⚠️ No message/business_message found")
+
+        logger.info("=" * 80)
+
     bm = None
     is_business = False
     if update.business_message:
@@ -431,29 +467,95 @@ async def handle_all_updates(update: Update, context: ContextTypes.DEFAULT_TYPE)
             reply_params = None if is_business else ReplyParameters(message_id=bm.message_id)
 
             try:
-                await context.bot.send_message(
-                    chat_id=bm.chat.id,
-                    text=(
-                        "🤖*Thank you for submitting your article*🙏\n\n"
-                        "✅Kindly wait while your report is being prepared. I will notify you as soon as it is ready for download."
-                    ),
-                    parse_mode="Markdown",
-                    business_connection_id=bm.business_connection_id if is_business else None,
-                    reply_parameters=reply_params
-                )
+                # await context.bot.send_message(
+                #     chat_id=bm.chat.id,
+                #     text=(
+                #         "🤖*Thank you for submitting your article*🙏\n\n"
+                #         "✅Kindly wait while your report is being prepared. I will notify you as soon as it is ready for download."
+                #     ),
+                #     parse_mode="Markdown",
+                #     business_connection_id=bm.business_connection_id if is_business else None,
+                #     reply_parameters=reply_params
+                # )
+                if is_business:
+                    logger.info(
+                        f"📩 BUSINESS MESSAGE RECEIVED | "
+                        f"user_id={bm.chat.id} | "
+                        f"name={bm.chat.full_name} | "
+                        f"business_connection_id={bm.business_connection_id}"
+                    )
+
+                    try:
+                        await context.bot.send_message(
+                            business_connection_id=bm.business_connection_id,
+                            chat_id=bm.chat.id,
+                            text=(
+                                "🤖 *Thank you for submitting your article* 🙏\n\n"
+                                "✅ Kindly wait while your report is being prepared. "
+                                "I will notify you as soon as it is ready for download."
+                            ),
+                            parse_mode="Markdown"
+                        )
+
+                        logger.info(
+                            f"✅ THANK-YOU MESSAGE SENT TO USER {bm.chat.id}"
+                        )
+
+                    except Exception as e:
+                        logger.error(
+                            f"❌ FAILED TO SEND THANK-YOU MESSAGE | "
+                            f"user={bm.chat.id} | "
+                            f"business_connection_id={bm.business_connection_id} | "
+                            f"error={e}",
+                            exc_info=True
+                        )
+
                 logger.info("Sent thank-you message via business connection")
             except Exception as conn_err:
                 logger.warning(f"Failed to reply via business connection, attempting direct send: {conn_err}")
                 # Fallback to direct send (only works if user has started the bot)
-                await context.bot.send_message(
-                    chat_id=bm.chat.id,
-                    text=(
-                        "🤖*Thank you for submitting your article*🙏\n\n"
-                        "✅Kindly wait while your report is being prepared. I will notify you as soon as it is ready for download."
-                    ),
-                    parse_mode="Markdown",
-                    reply_parameters=None
-                )
+                # await context.bot.send_message(
+                #     chat_id=bm.chat.id,
+                #     text=(
+                #         "🤖*Thank you for submitting your article*🙏\n\n"
+                #         "✅Kindly wait while your report is being prepared. I will notify you as soon as it is ready for download."
+                #     ),
+                #     parse_mode="Markdown",
+                #     reply_parameters=None
+                # )
+                if is_business:
+                    logger.info(
+                        f"📩 BUSINESS MESSAGE RECEIVED | "
+                        f"user_id={bm.chat.id} | "
+                        f"name={bm.chat.full_name} | "
+                        f"business_connection_id={bm.business_connection_id}"
+                    )
+
+                    try:
+                        await context.bot.send_message(
+                            business_connection_id=bm.business_connection_id,
+                            chat_id=bm.chat.id,
+                            text=(
+                                "🤖 *Thank you for submitting your article* 🙏\n\n"
+                                "✅ Kindly wait while your report is being prepared. "
+                                "I will notify you as soon as it is ready for download."
+                            ),
+                            parse_mode="Markdown"
+                        )
+
+                        logger.info(
+                            f"✅ THANK-YOU MESSAGE SENT TO USER {bm.chat.id}"
+                        )
+
+                    except Exception as e:
+                        logger.error(
+                            f"❌ FAILED TO SEND THANK-YOU MESSAGE | "
+                            f"user={bm.chat.id} | "
+                            f"business_connection_id={bm.business_connection_id} | "
+                            f"error={e}",
+                            exc_info=True
+                        )
+
                 logger.info("Sent thank-you message directly (fallback)")
 
         except Exception as e:
@@ -471,7 +573,6 @@ async def handle_all_updates(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 )
             except Exception as notify_err:
                 logger.error(f"Failed to notify admin of error: {notify_err}")
-
 
 
 async def cancel_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -539,9 +640,11 @@ async def handle_region_selection(update: Update, context: ContextTypes.DEFAULT_
 
     return WAITING_FOR_UPLOAD_OPTION
 
+
 async def handle_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle the admin Cancel button."""
     return await cancel_current_conversation(update, context)
+
 
 async def upload_option_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -558,6 +661,7 @@ async def upload_option_handler(update: Update, context: ContextTypes.DEFAULT_TY
     else:
         await query.edit_message_text("✳️ Please enter how many files you want to upload (must be a number > 2):")
         return WAITING_FOR_MULTIPLE_FILES
+
 
 async def ask_file_count(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_input = update.message.text.strip()
@@ -605,7 +709,6 @@ async def handle_multiple_files(update: Update, context: ContextTypes.DEFAULT_TY
     return COLLECTING_FILES
 
 
-
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """ Handle file upload from users """
     document = update.message.document
@@ -636,6 +739,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     return WAITING_FOR_PAYMENT
 
+
 async def receive_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global code
     """ Receive payment amount and prompt for user ID """
@@ -656,6 +760,7 @@ async def receive_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=reply_markup
     )
     return WAITING_FOR_NAME
+
 
 async def receive_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     name = update.message.text.strip()
@@ -851,7 +956,8 @@ async def receive_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
             print(f"URL shortener failed: {short}")
             short_links.append(link)  # use original Google Drive link
 
-    save_report_links(user_id, amount, short_links, region, business_connection_id=business_conn_id)  # Update this function to store region
+    save_report_links(user_id, amount, short_links, region,
+                      business_connection_id=business_conn_id)  # Update this function to store region
 
     global report_links
     report_links = load_report_links()
@@ -898,7 +1004,8 @@ async def receive_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         logger.info(f"Sent report ready message to {user_id} via business connection")
     except Exception as conn_err:
-        logger.warning(f"Failed sending report ready message to {user_id} via business connection: {conn_err}. Attempting direct send.")
+        logger.warning(
+            f"Failed sending report ready message to {user_id} via business connection: {conn_err}. Attempting direct send.")
         # Fallback to direct send
         await context.bot.send_message(
             chat_id=user_id,
@@ -912,6 +1019,7 @@ async def receive_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # remove_user_data(user_id)
     cleanup_conversation_state(context)
     return ConversationHandler.END
+
 
 async def upload_to_drive(file_path, user_name, user_id):
     """
@@ -931,8 +1039,6 @@ async def upload_to_drive(file_path, user_name, user_id):
     except Exception as e:
         logger.error(f"❌ Error uploading file to Google Drive: {e}")
         raise e
-
-
 
 
 # ------------------ Start Command ------------------ #
@@ -990,7 +1096,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             callback_data=f"download_{user_id}",
             style="primary"
         )
-        
+
         keyboard = []
         if is_valid_url(razorpay_url):
             payment_button = inline_button(
@@ -1019,7 +1125,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             logger.info(f"Sent report downloader message to {user_id} via business connection")
         except Exception as conn_err:
-            logger.warning(f"Failed sending report downloader message to {user_id} via business connection: {conn_err}. Attempting direct send.")
+            logger.warning(
+                f"Failed sending report downloader message to {user_id} via business connection: {conn_err}. Attempting direct send.")
             await context.bot.send_message(
                 chat_id=user_id,
                 text=(
@@ -1040,7 +1147,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=get_admin_keyboard()
             )
         else:
-            await reply("🚫 There is no information about your report. Please contact Admin @coding_services.")
+            await reply(
+                "🚫 There is no information about your report. Please contact Admin @coding_services.")
+
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -1082,7 +1191,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     **kwargs
                 )
             except Exception as e:
-                logger.warning(f"Failed to edit message {current_message_id} with error: {e}. Falling back to send + delete.")
+                logger.warning(
+                    f"Failed to edit message {current_message_id} with error: {e}. Falling back to send + delete.")
                 # Send the new message instead
                 new_msg = await context.bot.send_message(
                     chat_id=query.message.chat.id,
@@ -1099,7 +1209,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     )
                 except Exception as del_err:
                     logger.warning(f"Failed to delete old message {current_message_id}: {del_err}")
-                
+
                 if new_msg:
                     current_message_id = new_msg.message_id
                 return new_msg
@@ -1110,7 +1220,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
 
     await edit_msg(f"♻️  Payment verifying. Please wait...")
-    report_links = load_report_links() # Refresh from Firebase
+    report_links = load_report_links()  # Refresh from Firebase
     if user_id in report_links:
         region = report_links[user_id].get('region', 'indian')
         amount = report_links[user_id].get('amount')
@@ -1161,7 +1271,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"<b>⬇️ Report Download Links:</b>\n{links_formatted}",
                 parse_mode="HTML"
             )
-            
+
             try:
                 DELETED_CODES_URL = f"{PAYMENT_CAPTURED_DETAILS_URL}/amount/{invoice_amount}"
                 response_del = requests.delete(url=DELETED_CODES_URL, timeout=5)
@@ -1188,7 +1298,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 logger.info(f"Sent join & share message to {user_id} via business connection")
             except Exception as conn_err:
-                logger.warning(f"Failed sending join & share message to {user_id} via business connection: {conn_err}. Attempting direct send.")
+                logger.warning(
+                    f"Failed sending join & share message to {user_id} via business connection: {conn_err}. Attempting direct send.")
                 # Fallback to direct send
                 await context.bot.send_message(
                     chat_id=user_id,
@@ -1262,6 +1373,7 @@ async def show_reports(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     return WAITING_FOR_DELETE_ID
 
+
 async def delete_user_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.text.strip()
     report_links = load_report_links()  # Refresh from Firebase
@@ -1278,6 +1390,7 @@ async def delete_user_report(update: Update, context: ContextTypes.DEFAULT_TYPE)
             reply_markup=get_admin_keyboard()
         )
     return ConversationHandler.END
+
 
 # ------------------ Admin Command: Show Users ------------------ #
 async def show_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1311,6 +1424,7 @@ async def show_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     return WAITING_FOR_DELETE_USER_ID
 
+
 async def delete_user_by_chat_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id_to_delete = update.message.text.strip()
     users = load_user_data()
@@ -1330,6 +1444,7 @@ async def delete_user_by_chat_id(update: Update, context: ContextTypes.DEFAULT_T
     )
     return ConversationHandler.END
 
+
 # ------------------ Help Command ------------------ #
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply_markup = get_admin_keyboard() if update.effective_user and update.effective_user.id == ADMIN_ID else None
@@ -1346,6 +1461,7 @@ Commands available:
         reply_markup=reply_markup
     )
 
+
 async def main():
     """ Main function to start the bot """
     application = Application.builder().token(TOKEN).build()
@@ -1357,9 +1473,26 @@ async def main():
     ])
 
     # Attach business update handler in a separate group so it doesn’t block others
+    # application.add_handler(
+    #     MessageHandler(
+    #         filters.Document.ALL,
+    #         handle_all_updates
+    #     ),
+    #     group=1
+    # )
+    # Business account messages
     application.add_handler(
         MessageHandler(
-            filters.Document.ALL,
+            filters.UpdateType.BUSINESS_MESSAGE & filters.Document.ALL,
+            handle_all_updates
+        ),
+        group=1
+    )
+
+    # Normal bot messages
+    application.add_handler(
+        MessageHandler(
+            filters.UpdateType.MESSAGE & filters.Document.ALL,
             handle_all_updates
         ),
         group=1
@@ -1473,7 +1606,6 @@ async def main():
     application.add_handler(MessageHandler(filters.Text([CANCEL_BUTTON]), handle_cancel))
     application.add_handler(CallbackQueryHandler(button_handler))
 
-
     # application.run_polling()
 
     await application.initialize()
@@ -1510,6 +1642,7 @@ async def main():
     )  # 🔥 KEEP RUNNING
 
     await asyncio.Event().wait()
+
 
 if __name__ == "__main__":
     asyncio.run(main())
