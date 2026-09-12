@@ -27,18 +27,31 @@ if not ROOT_FOLDER_ID:
 
 
 # ================= GOOGLE DRIVE INITIALIZATION =================
+def clean_env(val):
+    """Strip whitespace and surrounding quotes from environment variable values."""
+    if not val:
+        return ""
+    val = val.strip()
+    if (val.startswith('"') and val.endswith('"')) or (val.startswith("'") and val.endswith("'")):
+        val = val[1:-1].strip()
+    return val
+
+
+# ================= GOOGLE DRIVE INITIALIZATION =================
 def get_drive_service():
     """
     Initialize Google Drive service.
-    First tries OAuth 2.0 credentials (via token.json or .env variables),
+    First tries OAuth 2.0 credentials (via token.json, GOOGLE_TOKEN_JSON, or .env variables),
     falling back to Firebase Service Account if OAuth is not configured.
     """
+    import json
     script_dir = os.path.dirname(os.path.abspath(__file__))
     token_path = os.path.join(script_dir, "token.json")
 
-    oauth_refresh_token = os.getenv("GOOGLE_OAUTH_REFRESH_TOKEN")
-    oauth_client_id = os.getenv("GOOGLE_OAUTH_CLIENT_ID")
-    oauth_client_secret = os.getenv("GOOGLE_OAUTH_CLIENT_SECRET")
+    oauth_refresh_token = clean_env(os.getenv("GOOGLE_OAUTH_REFRESH_TOKEN"))
+    oauth_client_id = clean_env(os.getenv("GOOGLE_OAUTH_CLIENT_ID"))
+    oauth_client_secret = clean_env(os.getenv("GOOGLE_OAUTH_CLIENT_SECRET"))
+    google_token_json = clean_env(os.getenv("GOOGLE_TOKEN_JSON"))
 
     creds = None
 
@@ -56,13 +69,26 @@ def get_drive_service():
             print(f"Warning: Failed loading token.json: {e}")
             creds = None
 
-    # 2. Try OAuth 2.0 credentials from .env
+    # 2. Try OAuth 2.0 from raw GOOGLE_TOKEN_JSON environment variable
+    if not creds and google_token_json:
+        try:
+            token_data = json.loads(google_token_json)
+            creds = Credentials.from_authorized_user_info(token_data, scopes=SCOPES)
+            if creds and not creds.valid and creds.refresh_token:
+                creds.refresh(Request())
+            print("Google Drive: Authenticated via GOOGLE_TOKEN_JSON environment variable")
+        except Exception as e:
+            print(f"Warning: Failed loading GOOGLE_TOKEN_JSON: {e}")
+            creds = None
+
+    # 3. Try OAuth 2.0 credentials from environment variables
     if not creds and oauth_refresh_token and oauth_client_id and oauth_client_secret:
         try:
+            token_uri = clean_env(os.getenv("GOOGLE_OAUTH_TOKEN_URI")) or "https://oauth2.googleapis.com/token"
             creds = Credentials(
                 token=None,
                 refresh_token=oauth_refresh_token,
-                token_uri=os.getenv("GOOGLE_OAUTH_TOKEN_URI", "https://oauth2.googleapis.com/token"),
+                token_uri=token_uri,
                 client_id=oauth_client_id,
                 client_secret=oauth_client_secret,
                 scopes=SCOPES
@@ -70,41 +96,23 @@ def get_drive_service():
             creds.refresh(Request())
             print("Google Drive: Authenticated via OAuth 2.0 environment variables")
         except Exception as e:
-            print(f"Warning: Failed OAuth authentication from .env: {e}")
-            creds = None
+            raise RuntimeError(
+                f"Google Drive OAuth authentication failed from environment variables: {e}.\n"
+                "Please verify that GOOGLE_OAUTH_REFRESH_TOKEN, GOOGLE_OAUTH_CLIENT_ID, and "
+                "GOOGLE_OAUTH_CLIENT_SECRET are set correctly in Render without surrounding quotes."
+            ) from e
 
-    # 3. Fallback to Service Account credentials from .env
+    # 4. If no OAuth credentials were found, fail fast with a clear error message
     if not creds:
-        service_account_info = {
-            "type": os.getenv("FIREBASE_TYPE", "service_account"),
-            "project_id": os.getenv("FIREBASE_PROJECT_ID"),
-            "private_key_id": os.getenv("FIREBASE_PRIVATE_KEY_ID"),
-            "private_key": os.getenv("FIREBASE_PRIVATE_KEY", "").replace("\\n", "\n"),
-            "client_email": os.getenv("FIREBASE_CLIENT_EMAIL"),
-            "client_id": os.getenv("FIREBASE_CLIENT_ID"),
-            "auth_uri": os.getenv("FIREBASE_AUTH_URI", "https://accounts.google.com/o/oauth2/auth"),
-            "token_uri": os.getenv("FIREBASE_TOKEN_URI", "https://oauth2.googleapis.com/token"),
-            "auth_provider_x509_cert_url": os.getenv(
-                "FIREBASE_AUTH_PROVIDER_CERT_URL",
-                "https://www.googleapis.com/oauth2/v1/certs"
-            ),
-            "client_x509_cert_url": os.getenv("FIREBASE_CLIENT_CERT_URL", ""),
-            "universe_domain": os.getenv("FIREBASE_UNIVERSE_DOMAIN", "googleapis.com"),
-        }
-
-        required = ["project_id", "private_key_id", "private_key", "client_email", "client_id"]
-        missing = [key for key in required if not service_account_info.get(key)]
-        if missing:
-            raise ValueError(
-                "Neither valid OAuth 2.0 credentials nor complete Firebase Service Account credentials found. "
-                f"Missing keys: {', '.join(missing)}"
-            )
-
-        creds = service_account.Credentials.from_service_account_info(
-            service_account_info,
-            scopes=SCOPES
+        raise RuntimeError(
+            "❌ Google Drive authentication failed: No valid OAuth 2.0 user credentials found.\n\n"
+            "Personal Google Drive accounts require OAuth 2.0 user credentials to upload files "
+            "(Firebase Service Accounts have 0 storage quota and will fail with HttpError 403).\n\n"
+            "To fix this, please ensure one of the following is configured:\n"
+            "1. token.json is present in the project directory, OR\n"
+            "2. GOOGLE_TOKEN_JSON environment variable contains the contents of token.json, OR\n"
+            "3. GOOGLE_OAUTH_REFRESH_TOKEN, GOOGLE_OAUTH_CLIENT_ID, and GOOGLE_OAUTH_CLIENT_SECRET are set in your environment variables."
         )
-        print("Google Drive: Authenticated via Service Account")
 
     try:
         service = build("drive", "v3", credentials=creds, cache_discovery=False)
