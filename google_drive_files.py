@@ -1,9 +1,11 @@
 # google_drive_files.py
 import os
 import mimetypes
+from pathlib import Path
 from dotenv import load_dotenv
 
-load_dotenv()
+ENV_PATH = Path(__file__).resolve().parent / ".env"
+load_dotenv(dotenv_path=ENV_PATH)
 
 from google.oauth2 import service_account
 from google.oauth2.credentials import Credentials
@@ -256,3 +258,26 @@ def upload_and_get_link(file_path, folder_name):
         print(f"Error: {e}")
         print("=" * 60)
         raise
+
+
+def upload_private_file(file_path, folder_name):
+    """
+    Upload report to Google Drive privately without creating public sharing links.
+    Returns:
+        dict: {"file_id": file_id, "file_name": file_name, "provider": "google_drive"}
+    """
+    folder_id = get_or_create_folder(folder_name)
+    file_id = upload_file(folder_id, file_path)
+    file_name = os.path.basename(file_path)
+    return {
+        "file_id": file_id,
+        "file_name": file_name,
+        "provider": "google_drive"
+    }
+
+
+def download_file_bytes(file_id):
+    """
+    Download raw file bytes from Google Drive using the authenticated service.
+    """
+    return drive_service.files().get_media(fileId=file_id).execute()
