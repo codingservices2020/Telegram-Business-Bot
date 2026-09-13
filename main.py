@@ -6,7 +6,10 @@ import os
 try:
     import requests
     import httpx
-    import fitz  # PyMuPDF
+    try:
+        import pymupdf as fitz
+    except ImportError:
+        import fitz
     import PyPDF2
     import telegram
     import firebase_admin
@@ -26,35 +29,21 @@ except ModuleNotFoundError:
         print(f"Error installing dependencies: {e}", file=sys.stderr)
         sys.exit(1)
 
-import json
-import logging
-# from locale import currency
-
-import requests
-import httpx
-import uuid
-import asyncio
-import fitz  # PyMuPDF
-from PyPDF2 import PdfReader, PdfWriter  # Required for sign_pdf
-from firebase_db import save_report_links, load_report_links, remove_report_links, save_user_data, load_user_data, \
-    get_latest_users, remove_user_data
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, ReplyParameters
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, ConversationHandler, \
-    CallbackQueryHandler  # , CallbackContext, TypeHandler
-from google_drive_files import upload_and_get_link
-
-import warnings
-from keep_alive import keep_alive
-
-keep_alive()
-
+from pathlib import Path
 from dotenv import load_dotenv
 
-load_dotenv()
+ENV_PATH = Path(__file__).resolve().parent / ".env"
+load_dotenv(dotenv_path=ENV_PATH)
 
-
+import warnings
 warnings.filterwarnings("ignore", category=DeprecationWarning)
-# Enable logging to both console and a file
+warnings.filterwarnings("ignore", message=".*The `fitz` API is deprecated.*")
+warnings.filterwarnings("ignore", category=UserWarning, module="fitz")
+
+import json
+import logging
+
+# Enable logging to both console and a file immediately
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -65,10 +54,45 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# from locale import currency
+
+import io
+import requests
+import httpx
+import uuid
+import asyncio
+try:
+    import pymupdf as fitz
+except ImportError:
+    import fitz
+from PyPDF2 import PdfReader, PdfWriter  # Required for sign_pdf
+from firebase_db import save_report_links, load_report_links, remove_report_links, save_user_data, load_user_data, \
+    get_latest_users, remove_user_data
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, ReplyParameters
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, ConversationHandler, \
+    CallbackQueryHandler  # , CallbackContext, TypeHandler
+
+# Cloud Storage Providers (Google Drive primary, Microsoft OneDrive fallback)
+google_drive_files = None
+try:
+    import google_drive_files
+    logger.info("✅ Google Drive module initialized successfully.")
+except Exception as e:
+    logger.error(f"❌ Failed to load google_drive_files: {e}", exc_info=True)
+
+onedrive_files = None
+try:
+    import onedrive_files
+    logger.info("✅ Microsoft OneDrive module initialized successfully.")
+except Exception as e:
+    logger.error(f"❌ Failed to load onedrive_files: {e}", exc_info=True)
+
+from keep_alive import keep_alive
+
+keep_alive()
+
 # Load environment variables
 TOKEN = os.getenv("TOKEN")
-SHORTIO_LINK_API_KEY = os.getenv("SHORTIO_LINK_API_KEY")
-SHORTIO_DOMAIN = os.getenv("SHORTIO_DOMAIN")
 PDF_PASSWORD = os.getenv("PDF_PASSWORD")
 SIGN_TEXT_1 = os.getenv("SIGN_TEXT_1")
 URL = f'https://api.telegram.org/bot{TOKEN}/getUpdates'
@@ -236,26 +260,6 @@ async def verify_payment(chat_id, payment_amount):
 
     logger.error("Max retries exceeded or error occurred during payment verification.")
     return False
-
-
-def shorten_url(long_url):
-    BASE_URL = "https://api.short.io/links/"  # Short.io API Endpoint
-    # Headers
-    headers = {
-        "Authorization": SHORTIO_LINK_API_KEY,
-        "Content-Type": "application/json"
-    }
-    # Payload
-    data = {"domain": SHORTIO_DOMAIN,
-            "originalURL": long_url,
-            "title": "Test Link"
-            }
-    try:
-        response = requests.post(BASE_URL, json=data, headers=headers, timeout=5)
-        return response.json()["shortURL"]
-    except Exception as e:
-        print(f"Error shortening URL: {e}")
-        return long_url
 
 
 def process_all_files(context, do_sign):
@@ -895,89 +899,100 @@ async def receive_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cleanup_conversation_state(context)
         return ConversationHandler.END
 
+    initial_text = "♻️ Uploading file to Google Drive..." if google_drive_files else "♻️ Uploading file to Microsoft OneDrive..."
     await context.bot.send_message(
         chat_id=chat_id,
-        text="♻️ Uploading file to Google Drive...",
+        text=initial_text,
         reply_markup=get_cancel_keyboard()
     )
 
-    links = []
+    files_uploaded = []
+    providers_used = []
     error_occurred = None
+    use_onedrive_for_batch = (google_drive_files is None)
+
     for path, _ in context.user_data["files"]:
         try:
-            link = await upload_to_drive(path, name, user_id)
-            if link:
-                links.append(link)
+            file_info, provider, switched = await upload_to_storage_with_fallback(
+                file_path=path,
+                user_name=name,
+                user_id=user_id,
+                force_onedrive=use_onedrive_for_batch
+            )
+            if switched and not use_onedrive_for_batch:
+                use_onedrive_for_batch = True
+                try:
+                    await context.bot.send_message(
+                        chat_id=chat_id,
+                        text="⚠️ *Google Drive encountered an issue.* Automatically switching to **Microsoft OneDrive** fallback...",
+                        parse_mode="Markdown"
+                    )
+                except Exception as notify_err:
+                    logger.debug(f"Could not send fallback switch notification: {notify_err}")
+
+            if file_info:
+                files_uploaded.append(file_info)
+                if provider not in providers_used:
+                    providers_used.append(provider)
         except Exception as e:
             error_occurred = e
             break
 
-    if not links:
+    if not files_uploaded:
         err_msg = str(error_occurred) if error_occurred else "Unknown error"
         admin_advice = ""
         if "invalid_grant" in err_msg.lower() or "account not found" in err_msg.lower():
             admin_advice = (
-                "\n\n🔑 *Authentication Issue Detected:*\n"
-                "Your primary Google service account has been deleted/disabled.\n\n"
-                "💡 *To fix this using your Firebase service account instead:*\n"
-                "1️⃣ Click this link to enable Google Drive API:\n"
-                "https://console.developers.google.com/apis/api/drive.googleapis.com/overview?project=1062559103\n"
-                "2️⃣ Share the Google Drive Folder `1uwXkwaltm_wjMhZ4f6U0tgCqqrvSYB5-` with your Firebase service account email:\n"
-                "`firebase-adminsdk-fbsvc@telegrambotdb-14fe7.iam.gserviceaccount.com` as an *Editor*."
+                "\n\n🔑 *Google Auth Issue:*\n"
+                "Google OAuth credentials may have expired or need refreshing.\n"
+                "Please verify token.json or GOOGLE_OAUTH_* in .env."
             )
-        elif "api has not been used" in err_msg.lower() or "disabled" in err_msg.lower():
+        elif "onedrive" in err_msg.lower() and ("client_secret" in err_msg.lower() or "unauthorized" in err_msg.lower()):
             admin_advice = (
-                "\n\n⚠️ *Drive API Disabled:*\n"
-                "Google Drive API has not been enabled in your Firebase project.\n\n"
-                "💡 *To fix this:*\n"
-                "1️⃣ Enable the API by visiting this link:\n"
-                "https://console.developers.google.com/apis/api/drive.googleapis.com/overview?project=1062559103\n"
-                "2️⃣ Share the Google Drive Folder `1uwXkwaltm_wjMhZ4f6U0tgCqqrvSYB5-` with your Firebase service account email:\n"
-                "`firebase-adminsdk-fbsvc@telegrambotdb-14fe7.iam.gserviceaccount.com` as an *Editor*."
+                "\n\n🔑 *OneDrive Auth Issue:*\n"
+                "Please verify AZURE_TENANT_ID, AZURE_CLIENT_ID, and AZURE_CLIENT_SECRET in .env."
             )
         await context.bot.send_message(
             chat_id=chat_id,
-            text=f"❌ *Upload failed.*\n\nError Details: `{err_msg}`{admin_advice}",
+            text=f"❌ *Upload failed across cloud providers.*\n\nError Details:\n`{err_msg}`{admin_advice}",
             reply_markup=get_admin_keyboard(),
             parse_mode="Markdown"
         )
         cleanup_conversation_state(context)
         return ConversationHandler.END
 
-    # short_links =
-    short_links = []
-
-    for link in links:
-        short = shorten_url(link)
-
-        if short and not short.lower().startswith("error"):
-            short_links.append(short)
-        else:
-            print(f"URL shortener failed: {short}")
-            short_links.append(link)  # use original Google Drive link
-
-    save_report_links(user_id, amount, short_links, region,
-                      business_connection_id=business_conn_id)  # Update this function to store region
+    save_report_links(
+        user_id=user_id,
+        amount=amount,
+        links=[],
+        region=region,
+        business_connection_id=business_conn_id,
+        files=files_uploaded
+    )
 
     global report_links
     report_links = load_report_links()
-
-    links_formatted = "\n".join(
-        [f"📥 File {i + 1}: {link}" for i, link in enumerate(report_links[user_id]["links"])]
-    )
 
     if region == "indian":
         payment_amount = f"Rs {amount}/-"
     else:
         payment_amount = f"${amount}"
 
+    storage_display = ", ".join(providers_used) if providers_used else "Cloud Storage"
+    files_formatted = "\n".join(
+        [f"📄 File {i + 1}: <b>{f.get('file_name', 'Report')}</b> ({f.get('provider', 'cloud')})"
+         for i, f in enumerate(files_uploaded)]
+    )
+
     await context.bot.send_message(
         chat_id=chat_id,
         text=(
             f"<b>🔰REPORT UPLOADED SUCCESSFULLY!🔰</b>\n\n"
             f"👤 <b>Name:</b> <a href='tg://user?id={user_id}'>{name}</a>\n"
+            f"☁️ <b>Storage:</b> {storage_display} (Stored Privately)\n"
             f"💰 <b>Amount:</b> {payment_amount}\n\n"
-            f"<b>⬇️ Report Download Links:</b>\n{links_formatted}"
+            f"<b>📁 Stored Files:</b>\n{files_formatted}\n\n"
+            f"<i>Files will be downloaded from cloud and delivered as PDF documents upon payment verification.</i>"
         ),
         parse_mode="HTML",
         reply_markup=get_admin_keyboard()
@@ -998,7 +1013,7 @@ async def receive_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
             chat_id=user_id,
             text=f"<b>🔰REPORT IS READY🔰</b>\n\n"
                  f"Please, click on the button below and make the payment of"
-                 f" <b>{payment_amount}</b> to download your report.",
+                 f" <b>{payment_amount}</b> to receive your report.",
             reply_markup=reply_markup,
             parse_mode="HTML"
         )
@@ -1011,7 +1026,7 @@ async def receive_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
             chat_id=user_id,
             text=f"<b>🔰REPORT IS READY🔰</b>\n\n"
                  f"Please, click on the button below and make the payment of"
-                 f" <b>{payment_amount}</b> to download your report.",
+                 f" <b>{payment_amount}</b> to receive your report.",
             reply_markup=reply_markup,
             parse_mode="HTML"
         )
@@ -1021,24 +1036,100 @@ async def receive_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 
-async def upload_to_drive(file_path, user_name, user_id):
+async def upload_to_storage_with_fallback(file_path, user_name, user_id, force_onedrive=False):
     """
-    Upload file to Google Drive and return direct download link
+    Upload file privately to Google Drive with automatic fallback to Microsoft OneDrive.
+    Returns:
+        tuple: (file_info_dict, provider_name, switched_to_fallback)
+        file_info_dict format: {"file_id": ..., "file_name": ..., "provider": "google_drive" | "onedrive"}
     """
-    try:
-        folder_name = f"{user_name} ({user_id})"
+    global google_drive_files, onedrive_files
+    folder_name = f"{user_name} ({user_id})"
+    gdrive_error = None
+    switched = False
 
-        # One-step upload + link
-        drive_link = upload_and_get_link(
-            file_path=file_path,
-            folder_name=folder_name
+    # Retry loading google_drive_files if it was not available at startup
+    if not force_onedrive and google_drive_files is None:
+        try:
+            import google_drive_files as gdf
+            google_drive_files = gdf
+            logger.info("Retried and successfully initialized google_drive_files on-demand.")
+        except Exception as retry_err:
+            logger.warning(f"Google Drive on-demand retry failed: {retry_err}")
+
+    # 1. Try Google Drive first if not forced to OneDrive and module is loaded
+    if not force_onedrive and google_drive_files:
+        try:
+            logger.info(f"Uploading '{file_path}' privately to Google Drive...")
+            file_info = google_drive_files.upload_private_file(
+                file_path=file_path,
+                folder_name=folder_name
+            )
+            if file_info:
+                return file_info, "Google Drive", False
+        except Exception as e:
+            gdrive_error = e
+            logger.warning(
+                f"⚠️ Google Drive upload failed for '{file_path}': {e}. "
+                f"Falling back to Microsoft OneDrive..."
+            )
+            switched = True
+    elif not google_drive_files and not force_onedrive:
+        gdrive_error = "Google Drive is not initialized or configured"
+        switched = True
+
+    # 2. Fallback to Microsoft OneDrive
+    if onedrive_files:
+        try:
+            logger.info(f"Uploading '{file_path}' privately to Microsoft OneDrive...")
+            file_info = onedrive_files.upload_private_file(
+                file_path=file_path,
+                folder_name=folder_name
+            )
+            if file_info:
+                provider = "Microsoft OneDrive (Fallback)" if gdrive_error else "Microsoft OneDrive"
+                return file_info, provider, switched
+        except Exception as onedrive_error:
+            logger.error(f"❌ Microsoft OneDrive upload failed: {onedrive_error}")
+            raise RuntimeError(
+                f"Cloud storage upload failed across both providers!\n\n"
+                f"• Google Drive: {gdrive_error}\n"
+                f"• Microsoft OneDrive: {onedrive_error}"
+            )
+    else:
+        raise RuntimeError(
+            f"Google Drive upload failed ({gdrive_error}) and Microsoft OneDrive is not available."
         )
 
-        return drive_link
 
-    except Exception as e:
-        logger.error(f"❌ Error uploading file to Google Drive: {e}")
-        raise e
+def download_cloud_file_bytes(file_info):
+    """
+    Download file binary bytes from Google Drive or Microsoft OneDrive based on provider metadata.
+    file_info format: {"file_id": ..., "file_name": ..., "provider": "google_drive" | "onedrive"}
+    Returns: bytes
+    """
+    provider = file_info.get("provider")
+    file_id = file_info.get("file_id")
+
+    if provider == "google_drive":
+        if not google_drive_files:
+            raise RuntimeError("Google Drive module not loaded.")
+        return google_drive_files.download_file_bytes(file_id)
+    elif provider == "onedrive":
+        if not onedrive_files:
+            raise RuntimeError("Microsoft OneDrive module not loaded.")
+        return onedrive_files.download_file_bytes(file_id)
+    else:
+        raise ValueError(f"Unknown storage provider: {provider}")
+
+
+async def upload_to_drive(file_path, user_name, user_id):
+    """
+    Upload file to cloud storage with automatic fallback.
+    Maintained for backward compatibility.
+    """
+    file_info, _, _ = await upload_to_storage_with_fallback(file_path, user_name, user_id)
+    return file_info
 
 
 # ------------------ Start Command ------------------ #
@@ -1262,15 +1353,85 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         paid = await verify_payment(user_id, invoice_amount)
 
         if paid:
-            links_formatted = "\n".join(
-                [f"📥 File {i + 1}: {link}" for i, link in enumerate(report_links[user_id]["links"])])
+            # Inform user we are fetching the report
             await edit_msg(
-                f"<b>🔰PAYMENT VERIFIED🔰</b>\n\n"
-                f"🙏Thank you for making the payment.\n\n"
-                f"✅ Download your report by clicking on the link below.\n\n"
-                f"<b>⬇️ Report Download Links:</b>\n{links_formatted}",
+                f"<b>🔰PAYMENT VERIFIED!🔰</b>\n\n"
+                f"🙏 Thank you for making the payment.\n"
+                f"⏳ Fetching your report from cloud storage...",
                 parse_mode="HTML"
             )
+
+            user_report = report_links.get(user_id, {})
+            stored_files = user_report.get("files", [])
+            business_conn_id = user_report.get("business_connection_id")
+            if not business_conn_id:
+                user_info = load_user_data().get(str(user_id), {})
+                business_conn_id = user_info.get("business_connection_id")
+
+            delivery_success = True
+            if stored_files:
+                for idx, file_meta in enumerate(stored_files):
+                    file_name = file_meta.get("file_name", f"Report_{idx + 1}.pdf")
+                    try:
+                        logger.info(f"Downloading {file_name} from {file_meta.get('provider')} for user {user_id}...")
+                        file_bytes = download_cloud_file_bytes(file_meta)
+                        doc_stream = io.BytesIO(file_bytes)
+                        doc_stream.name = file_name
+
+                        caption = f"📄 <b>{file_name}</b>"
+                        try:
+                            await context.bot.send_document(
+                                business_connection_id=business_conn_id,
+                                chat_id=user_id,
+                                document=doc_stream,
+                                filename=file_name,
+                                caption=caption,
+                                parse_mode="HTML"
+                            )
+                            logger.info(f"Sent {file_name} to {user_id} via business connection.")
+                        except Exception as doc_conn_err:
+                            logger.warning(
+                                f"Failed sending document via business connection: {doc_conn_err}. Falling back to direct send."
+                            )
+                            doc_stream.seek(0)
+                            await context.bot.send_document(
+                                chat_id=user_id,
+                                document=doc_stream,
+                                filename=file_name,
+                                caption=caption,
+                                parse_mode="HTML"
+                            )
+                            logger.info(f"Sent {file_name} to {user_id} directly (fallback).")
+                    except Exception as dl_err:
+                        logger.error(f"Failed to download/send file {file_name} to user {user_id}: {dl_err}", exc_info=True)
+                        delivery_success = False
+
+                if delivery_success:
+                    await edit_msg(
+                        f"<b>🔰PAYMENT VERIFIED🔰</b>\n\n"
+                        f"🙏 Thank you for making the payment.\n\n"
+                        f"✅ <b>Your report has been sent above as a PDF document.</b>",
+                        parse_mode="HTML"
+                    )
+                else:
+                    await edit_msg(
+                        f"<b>🔰PAYMENT VERIFIED🔰</b>\n\n"
+                        f"⚠️ There was an issue downloading one or more files.\n"
+                        f"Please contact Admin @coding_services.",
+                        parse_mode="HTML"
+                    )
+            elif user_report.get("links"):
+                # Backward compatibility for any legacy records
+                links_formatted = "\n".join(
+                    [f"📥 File {i + 1}: {link}" for i, link in enumerate(user_report["links"])]
+                )
+                await edit_msg(
+                    f"<b>🔰PAYMENT VERIFIED🔰</b>\n\n"
+                    f"🙏 Thank you for making the payment.\n\n"
+                    f"✅ Download your report by clicking on the link below:\n\n"
+                    f"<b>⬇️ Report Download Links:</b>\n{links_formatted}",
+                    parse_mode="HTML"
+                )
 
             try:
                 DELETED_CODES_URL = f"{PAYMENT_CAPTURED_DETAILS_URL}/amount/{invoice_amount}"
@@ -1348,19 +1509,24 @@ async def show_reports(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for chat_id, details in report_links.items():
         name = users.get(chat_id, {}).get("name", "Unknown")
         # user_link = f"🆔 User ID:<a href='tg://user?id={chat_id}'>{chat_id}</a>"
-        amount = details.get("amount", "N/A")
+        files = details.get("files", [])
         links = details.get("links", [])
 
-        if links:
-            link_lines = "\n".join([f"📥 File {i + 1}: {link}" for i, link in enumerate(links)])
+        if files:
+            file_lines = "\n".join(
+                [f"📄 File {i + 1}: {f.get('file_name', 'Report')} ({f.get('provider', 'cloud')})"
+                 for i, f in enumerate(files)]
+            )
+        elif links:
+            file_lines = "\n".join([f"📥 File {i + 1}: {link}" for i, link in enumerate(links)])
         else:
-            link_lines = "🔗 No links found."
+            file_lines = "📁 No files found."
 
         messages.append(
             f"<b>👤 Name:</b> <a href='tg://user?id={chat_id}'> {name}</a>\n"
             f"<b>🆔 User ID:</b> <code>{chat_id}</code>\n"
             f"<b>💰 Amount:</b> Rs {amount}/-\n"
-            f"{link_lines}\n"
+            f"{file_lines}\n"
         )
 
     final_report = "\n\n".join(messages)
