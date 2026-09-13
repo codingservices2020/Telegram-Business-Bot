@@ -1,15 +1,33 @@
+# Web Framework & Keep-Alive
 flask
+
+# Telegram Bot
+python-telegram-bot[job-queue]~=22.8
+apscheduler
+
+# HTTP Clients
 requests~=2.34.2
 httpx~=0.28.1
-apscheduler
+
+# Configuration & Environment
 python-dotenv~=1.2.3
-python-telegram-bot[job-queue]~=22.8
-protobuf~=7.36.1
-pcloud
+
+# Firebase Database
 firebase-admin>=6.6.0
+protobuf~=7.36.1
+
+# PDF Processing & Digital Signing
 PyMuPDF>=1.23.0
 PyPDF2>=3.0.0
+
+# Google Drive API
 google-api-python-client~=2.200.0
 google-auth~=2.58.0
 google-auth-httplib2~=0.4.2
 google-auth-oauthlib~=1.4.1
+
+# Microsoft OneDrive (Microsoft Graph & MSAL)
+msal>=1.28.0
+
+# Legacy Cloud Storage
+pcloud
