@@ -3,14 +3,14 @@ import os
 import json
 import firebase_admin
 from firebase_admin import credentials, firestore
+from pathlib import Path
 from dotenv import load_dotenv
 
+ENV_PATH = Path(__file__).resolve().parent / ".env"
+load_dotenv(dotenv_path=ENV_PATH)
 
-# Load environment variables
-load_dotenv()
-
-# DB_FILE_NAME = "testing_database"  # Define the firebase database file
-DB_FILE_NAME = "Reports_Download_links"  # Define the firebase database file
+DB_FILE_NAME = "testing_database"  # Define the firebase database file
+# DB_FILE_NAME = "Reports_Download_links"  # Define the firebase database file
 
 # Build the Firebase credentials dictionary dynamically
 firebase_config = {
@@ -35,15 +35,18 @@ firebase_admin.initialize_app(cred)
 db = firestore.client()
 
 
-def save_report_links(user_id, amount, links, region="indian", paypal_order_id=None, paypal_approve_url=None, business_connection_id=None):
-    """Save user subscription to Firestore (supports PayPal order ID for non-Indian users)"""
+def save_report_links(user_id, amount, links, region="indian", paypal_order_id=None, paypal_approve_url=None, business_connection_id=None, files=None):
+    """Save user subscription to Firestore (supports PayPal order ID for non-Indian users and direct files)"""
     doc_ref = db.collection(DB_FILE_NAME).document(str(user_id))
 
     data = {
         "amount": amount,
-        "links": links,
+        "links": links if links is not None else [],
         "region": region,
     }
+
+    if files:
+        data["files"] = files
 
     if business_connection_id:
         data["business_connection_id"] = business_connection_id
@@ -65,7 +68,8 @@ def load_report_links():
         return {
             user.id: {
                 "amount": user.to_dict().get("amount", "Unknown"),
-                "links": user.to_dict().get("links", "Unknown"),
+                "links": user.to_dict().get("links", []),
+                "files": user.to_dict().get("files", []),
                 "region": user.to_dict().get("region", "Unknown"),
                 "paypal_order_id": user.to_dict().get("paypal_order_id"),  # 🔥 NEW
                 "paypal_approve_url": user.to_dict().get("paypal_approve_url"),
