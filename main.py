@@ -232,6 +232,45 @@ async def verify_payment(chat_id, payment_amount):
     max_retries = 3
     retry_delay = 2.0  # seconds
 
+    def _matches_user(entry, target_id):
+        target_str = str(target_id).strip()
+        # 1. Check known keys that may hold user ID / chat ID / telegram ID
+        for key in ('user_id', '.', 'chat_id', 'telegram_id', 'userid', 'Telegram ID', 'User ID', 'telegram', 'id'):
+            val = entry.get(key)
+            if val is not None and str(val).strip() == target_str:
+                return True
+        # 2. Case-insensitive / whitespace-stripped key check
+        for k, v in entry.items():
+            k_clean = str(k).strip().lower().replace('_', '').replace(' ', '')
+            if k_clean in ('userid', '.', 'chatid', 'telegramid', 'telegram', 'id'):
+                if str(v).strip() == target_str:
+                    return True
+        # 3. Value check: Does any field contain target_id? (excluding non-ID fields like email, name, service)
+        for k, v in entry.items():
+            if str(k).lower() in ('email', 'service', 'name'):
+                continue
+            if str(v).strip() == target_str:
+                return True
+        return False
+
+    def _matches_amount(entry, expected_amt):
+        amt_val = entry.get('amount')
+        if amt_val is None:
+            return False
+        s_entry = str(amt_val).strip()
+        s_expected = str(expected_amt).strip()
+        if s_entry == s_expected:
+            return True
+        # Float comparison if string contains currency or decimals (e.g. 2.00 vs 2)
+        try:
+            clean_entry = ''.join(c for c in s_entry if c.isdigit() or c == '.')
+            clean_exp = ''.join(c for c in s_expected if c.isdigit() or c == '.')
+            if clean_entry and clean_exp:
+                return float(clean_entry) == float(clean_exp)
+        except Exception:
+            pass
+        return False
+
     for attempt in range(max_retries):
         try:
             logger.info(
@@ -243,17 +282,18 @@ async def verify_payment(chat_id, payment_amount):
 
                 if isinstance(data, list):
                     for entry in data:
-                        if entry.get('user_id') == str(chat_id):
-                            if entry.get('amount') == str(payment_amount):
-                                logger.info(f"Payment verified for user {chat_id}")
-                                return True
-                logger.info("No matching payment details found in SheetDB.")
-                return False
+                        if _matches_user(entry, chat_id) and _matches_amount(entry, payment_amount):
+                            logger.info(f"Payment verified for user {chat_id} (amount {payment_amount})")
+                            return True
+                logger.info(f"No matching payment details found in SheetDB (attempt {attempt + 1}/{max_retries}).")
         except httpx.HTTPStatusError as err:
             logger.warning(f"HTTP error during payment verification (attempt {attempt + 1}/{max_retries}): {err}")
         except httpx.RequestError as err:
             logger.warning(
                 f"Request error / SSL error during payment verification (attempt {attempt + 1}/{max_retries}): {err}")
+        except Exception as err:
+            logger.warning(
+                f"Unexpected error during payment verification (attempt {attempt + 1}/{max_retries}): {err}")
 
         if attempt < max_retries - 1:
             await asyncio.sleep(retry_delay)
@@ -1312,9 +1352,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await edit_msg(f"♻️  Payment verifying. Please wait...")
     report_links = load_report_links()  # Refresh from Firebase
-    if user_id in report_links:
-        region = report_links[user_id].get('region', 'indian')
-        amount = report_links[user_id].get('amount')
+    target_user_key = str(user_id) if str(user_id) in report_links else user_id
+    if target_user_key in report_links:
+        region = report_links[target_user_key].get('region', 'indian')
+        amount = report_links[target_user_key].get('amount')
 
         if region == "indian":
             payment_amount = f"Rs {amount}/-"
@@ -1361,7 +1402,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode="HTML"
             )
 
-            user_report = report_links.get(user_id, {})
+            user_report = report_links.get(target_user_key, report_links.get(user_id, {}))
             stored_files = user_report.get("files", [])
             business_conn_id = user_report.get("business_connection_id")
             if not business_conn_id:
@@ -1434,10 +1475,21 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
 
             try:
-                DELETED_CODES_URL = f"{PAYMENT_CAPTURED_DETAILS_URL}/amount/{invoice_amount}"
-                response_del = requests.delete(url=DELETED_CODES_URL, timeout=5)
-                response_del.raise_for_status()
-                logger.info(f"Successfully deleted sheet entry for user {user_id}")
+                deleted = False
+                try:
+                    del_user_url = f"{PAYMENT_CAPTURED_DETAILS_URL}/user_id/{user_id}"
+                    resp_u = requests.delete(url=del_user_url, timeout=5)
+                    if resp_u.status_code == 200:
+                        deleted = True
+                        logger.info(f"Successfully deleted sheet entry for user {user_id} via user_id column")
+                except Exception:
+                    pass
+
+                if not deleted:
+                    DELETED_CODES_URL = f"{PAYMENT_CAPTURED_DETAILS_URL}/amount/{invoice_amount}"
+                    response_del = requests.delete(url=DELETED_CODES_URL, timeout=5)
+                    response_del.raise_for_status()
+                    logger.info(f"Successfully deleted sheet entry for user {user_id} via amount")
             except Exception as del_err:
                 logger.warning(f"Failed to delete verified entry from SheetDB: {del_err}")
 
