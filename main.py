@@ -1533,6 +1533,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"We could not verify your payment of <b>{payment_amount}</b> at this moment.\n\n"
                 f"1️⃣ If you have not paid yet, please make the payment first using the button below.\n"
                 f"2️⃣ If you have already paid, it may take 1-2 minutes to register. Please try clicking <b>📥 Download Report</b> again in a few moments.\n\n"
+                f"✅ Your User ID: `{user_id}` (tap to copy)\n"
                 f"✅ Need help? Contact Admin @coding_services.",
                 parse_mode="HTML",
                 reply_markup=reply_markup
