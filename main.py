@@ -93,6 +93,7 @@ keep_alive()
 
 # Load environment variables
 TOKEN = os.getenv("TOKEN")
+CHANNEL_ID = os.getenv("CHANNEL_ID")
 PDF_PASSWORD = os.getenv("PDF_PASSWORD")
 SIGN_TEXT_1 = os.getenv("SIGN_TEXT_1")
 URL = f'https://api.telegram.org/bot{TOKEN}/getUpdates'
@@ -226,6 +227,89 @@ def sign_pdf(pdf_file_path):
         writer.write(f_out)
 
     return signed_pdf_path
+
+
+async def is_user_subscribed(context: ContextTypes.DEFAULT_TYPE, channel_id, user_id) -> bool:
+    """Check if a user is already a member/admin/owner of the specified channel."""
+    target_channel = channel_id or os.getenv("CHANNEL_ID")
+    if not target_channel:
+        try:
+            load_dotenv(dotenv_path=ENV_PATH, override=True)
+            target_channel = os.getenv("CHANNEL_ID")
+        except Exception:
+            pass
+
+    if not target_channel:
+        target_channel = "-1001884223394"
+
+    if isinstance(target_channel, str):
+        target_channel = target_channel.strip().strip("'\"")
+
+    # If it's a URL like https://t.me/username, extract @username
+    if isinstance(target_channel, str) and "t.me/" in target_channel:
+        part = target_channel.split("t.me/")[-1].strip("/")
+        if not part.startswith("+"):
+            target_channel = f"@{part}"
+
+    try:
+        user_id_int = int(str(user_id).strip())
+    except (ValueError, TypeError):
+        logger.warning(f"Invalid user_id for subscription check: {user_id}")
+        return False
+
+    # Candidate representations for Telegram channel ID
+    channel_candidates = []
+    if isinstance(target_channel, int):
+        channel_candidates.append(target_channel)
+        if target_channel > 0:
+            channel_candidates.append(int(f"-100{target_channel}"))
+    elif isinstance(target_channel, str):
+        if target_channel.startswith("@"):
+            channel_candidates.append(target_channel)
+        elif target_channel.lstrip("-").isdigit():
+            val = int(target_channel)
+            channel_candidates.append(val)
+            if val > 0:
+                channel_candidates.append(int(f"-100{val}"))
+            elif not target_channel.startswith("-100"):
+                channel_candidates.append(int(f"-100{target_channel.lstrip('-')}"))
+        else:
+            channel_candidates.append(target_channel)
+
+    member = None
+    last_err = None
+    successful_channel = None
+
+    for cand in channel_candidates:
+        try:
+            member = await context.bot.get_chat_member(chat_id=cand, user_id=user_id_int)
+            successful_channel = cand
+            break
+        except Exception as e:
+            last_err = e
+            logger.debug(f"get_chat_member failed with candidate {cand}: {e}")
+
+    if member is None:
+        logger.warning(f"⚠️ Error checking channel membership for user {user_id} in channel {target_channel}: {last_err}")
+        return False
+
+    status = getattr(member, 'status', None)
+    if hasattr(status, 'value'):
+        status_val = str(status.value).lower()
+    else:
+        status_val = str(status).lower() if status else ""
+
+    type_name = type(member).__name__.lower()
+    logger.info(f"Channel membership check: user_id={user_id}, channel={successful_channel}, status='{status_val}', type='{type_name}'")
+
+    if any(k in status_val for k in ["member", "administrator", "creator", "owner"]) or any(k in type_name for k in ["member", "administrator", "owner"]):
+        if "left" not in status_val and "kicked" not in status_val and "banned" not in status_val:
+            return True
+
+    if "restricted" in status_val:
+        return getattr(member, 'is_member', True)
+
+    return False
 
 
 async def verify_payment(chat_id, payment_amount):
@@ -1499,30 +1583,44 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 user_info = load_user_data().get(str(user_id), {})
                 business_conn_id = user_info.get("business_connection_id")
 
+            # Send JOIN & SHARE message only if the user is not already subscribed to the channel
             try:
-                await context.bot.send_message(
-                    business_connection_id=business_conn_id,
-                    chat_id=user_id,
-                    text=f"*🔰JOIN & SHARE🔰*\n\n"
-                         f"✅Please share and join our Telegram channel with your friends to stay updated "
-                         f"about our products and services and also for weekly giveaways🎁\n\n"
-                         f"❤️ Join our Telegram channel: https://t.me/+66qt38tocAI0ZWI1",
-                    parse_mode="Markdown"
-                )
-                logger.info(f"Sent join & share message to {user_id} via business connection")
-            except Exception as conn_err:
-                logger.warning(
-                    f"Failed sending join & share message to {user_id} via business connection: {conn_err}. Attempting direct send.")
-                # Fallback to direct send
-                await context.bot.send_message(
-                    chat_id=user_id,
-                    text=f"*🔰JOIN & SHARE🔰*\n\n"
-                         f"✅Please share and join our Telegram channel with your friends to stay updated "
-                         f"about our products and services and also for weekly giveaways🎁\n\n"
-                         f"❤️ Join our Telegram channel: https://t.me/+66qt38tocAI0ZWI1",
-                    parse_mode="Markdown"
-                )
-                logger.info(f"Sent join & share message to {user_id} directly (fallback)")
+                is_subscribed = await is_user_subscribed(context, CHANNEL_ID, user_id)
+            except Exception as sub_err:
+                logger.warning(f"Failed to check channel subscription for {user_id}: {sub_err}")
+                is_subscribed = False
+
+            if not is_subscribed:
+                try:
+                    await context.bot.send_message(
+                        business_connection_id=business_conn_id,
+                        chat_id=user_id,
+                        text=f"*🔰JOIN & SHARE🔰*\n\n"
+                             f"✅Please share and join our Telegram channel with your friends to stay updated "
+                             f"about our products and services and also for weekly giveaways🎁\n\n"
+                             f"❤️ Join our Telegram channel: https://t.me/+66qt38tocAI0ZWI1",
+                        parse_mode="Markdown"
+                    )
+                    logger.info(f"Sent join & share message to {user_id} via business connection")
+                except Exception as conn_err:
+                    logger.warning(
+                        f"Failed sending join & share message to {user_id} via business connection: {conn_err}. Attempting direct send.")
+                    # Fallback to direct send
+                    try:
+                        await context.bot.send_message(
+                            chat_id=user_id,
+                            text=f"*🔰JOIN & SHARE🔰*\n\n"
+                                 f"✅Please share and join our Telegram channel with your friends to stay updated "
+                                 f"about our products and services and also for weekly giveaways🎁\n\n"
+                                 f"❤️ Join our Telegram channel: https://t.me/+66qt38tocAI0ZWI1",
+                            parse_mode="Markdown"
+                        )
+                        logger.info(f"Sent join & share message to {user_id} directly (fallback)")
+                    except Exception as direct_err:
+                        logger.warning(f"Failed sending join & share message to {user_id} directly: {direct_err}")
+            else:
+                logger.info(f"User {user_id} is already subscribed to channel {CHANNEL_ID}. Skipping JOIN & SHARE message.")
+
             remove_user_data(user_id)
             remove_report_links(user_id)
             load_report_links()  # Refresh from Firebase
