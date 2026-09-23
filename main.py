@@ -68,11 +68,11 @@ except ImportError:
 from PyPDF2 import PdfReader, PdfWriter  # Required for sign_pdf
 from firebase_db import save_report_links, load_report_links, remove_report_links, save_user_data, load_user_data, \
     get_latest_users, remove_user_data
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, ReplyParameters
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, ReplyParameters, KeyboardButton
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, ConversationHandler, \
     CallbackQueryHandler  # , CallbackContext, TypeHandler
 
-# Cloud Storage Providers (Google Drive primary, Microsoft OneDrive fallback)
+# Cloud Storage Providers (Google Drive primary, pCloud fallback)
 google_drive_files = None
 try:
     import google_drive_files
@@ -80,12 +80,13 @@ try:
 except Exception as e:
     logger.error(f"❌ Failed to load google_drive_files: {e}", exc_info=True)
 
-onedrive_files = None
+pcloud_utils = None
 try:
-    import onedrive_files
-    logger.info("✅ Microsoft OneDrive module initialized successfully.")
+    import pcloud_utils
+    logger.info("✅ pCloud module initialized successfully.")
 except Exception as e:
-    logger.error(f"❌ Failed to load onedrive_files: {e}", exc_info=True)
+    logger.error(f"❌ Failed to load pcloud_utils: {e}", exc_info=True)
+
 
 from keep_alive import keep_alive
 
@@ -127,14 +128,45 @@ OUTPUT_FOLDER = "edited_pdfs"
 os.makedirs(INPUT_FOLDER, exist_ok=True)
 os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 
-# Global variable to store the code fetched from the API.
-code = None
-# Define the cancel button
-CANCEL_BUTTON = "🚫 Cancel"
-START_BUTTON = "🤖 Start the Bot"
-UPLOAD_BUTTON = "⬆️ Upload"
-SHOW_REPORTS_BUTTON = "📜 Show Reports"
-SHOW_USERS_BUTTON = "👥 Show Users"
+# Custom Emoji HTML strings for messages
+UPLOAD_EMOJI = '<tg-emoji emoji-id="6109429315990981798">⬆️</tg-emoji>'
+REPORTS_EMOJI = '<tg-emoji emoji-id="5282843764451195532">📜</tg-emoji>'
+USERS_EMOJI = '<tg-emoji emoji-id="5461117441612462242">👥</tg-emoji>'
+CANCEL_EMOJI = '<tg-emoji emoji-id="5240241223632954241">🚫</tg-emoji>'
+CROSS_EMOJI = '<tg-emoji emoji-id="5210952531676504517">❌</tg-emoji>'
+RECYCLE_EMOJI = '<tg-emoji emoji-id="4967897119760319376">♻️</tg-emoji>'
+BOT_EMOJI = '<tg-emoji emoji-id="5372981976804366741">🤖</tg-emoji>'
+GREEN_TICK_EMOJI = '<tg-emoji emoji-id="6003394583566749782">✅</tg-emoji>'
+RED_TICK_EMOJI = '<tg-emoji emoji-id="6006039858219324431">✅</tg-emoji>'
+NAMASTE_EMOJI = '<tg-emoji emoji-id="5472189549473963781">🙏</tg-emoji>'
+WARNING_EMOJI = '<tg-emoji emoji-id="5420323339723881652">⚠️</tg-emoji>'
+FIRE_EMOJI = '<tg-emoji emoji-id="5424972470023104089">🔥</tg-emoji>'
+CRACKER_EMOJI = '<tg-emoji emoji-id="5276032951342088188">💥</tg-emoji>'
+MSWORD_EMOJI = '<tg-emoji emoji-id="5370845518337416649">📝</tg-emoji>'
+GOOGLE_DRIVE_EMOJI = '<tg-emoji emoji-id="5372878055775683161">📄</tg-emoji>'
+PDF_SYMBOL_EMOJI = '<tg-emoji emoji-id="5316632894939093711">📄</tg-emoji>'
+PDF_FILE_EMOJI = '<tg-emoji emoji-id="5280652918813374349">📄</tg-emoji>'
+SEND_FILE_EMOJI = '<tg-emoji emoji-id="5445355530111437729">📄</tg-emoji>'
+MONEY_EMOJI = '<tg-emoji emoji-id="5224257782013769471">💸</tg-emoji>'
+WORLD_EMOJI = '<tg-emoji emoji-id="5399898266265475100">🌍</tg-emoji>'
+INDIA_EMOJI = '<tg-emoji emoji-id="6109380284644329775">🇮🇳</tg-emoji>'
+TELEGRAM_EMOJI = '<tg-emoji emoji-id="5165976888283234815">Telegram</tg-emoji>'
+
+
+# Button texts and KeyboardButton definitions with Telegram Custom Emojis
+CANCEL_BUTTON_TEXT = "Cancel"
+CANCEL_BUTTON = KeyboardButton(CANCEL_BUTTON_TEXT, icon_custom_emoji_id="5240241223632954241")
+
+START_BUTTON = f"{BOT_EMOJI} Start the Bot"
+
+UPLOAD_BUTTON_TEXT = "Upload"
+UPLOAD_BUTTON = KeyboardButton(UPLOAD_BUTTON_TEXT, icon_custom_emoji_id="6109429315990981798")
+
+SHOW_REPORTS_BUTTON_TEXT = "Show Reports"
+SHOW_REPORTS_BUTTON = KeyboardButton(SHOW_REPORTS_BUTTON_TEXT, icon_custom_emoji_id="5282843764451195532")
+
+SHOW_USERS_BUTTON_TEXT = "Show Users"
+SHOW_USERS_BUTTON = KeyboardButton(SHOW_USERS_BUTTON_TEXT, icon_custom_emoji_id="5461117441612462242")
 
 
 
@@ -521,8 +553,9 @@ async def cancel_current_conversation(update: Update, context: ContextTypes.DEFA
     cleanup_conversation_state(context)
     if update.effective_message:
         await update.effective_message.reply_text(
-            "🚫 Current process cancelled.",
-            reply_markup=get_admin_keyboard()
+            f"{CANCEL_EMOJI} Current process cancelled.",
+            reply_markup=get_admin_keyboard(),
+            parse_mode="HTML"
         )
     return ConversationHandler.END
 
@@ -598,10 +631,10 @@ async def handle_all_updates(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 # await context.bot.send_message(
                 #     chat_id=bm.chat.id,
                 #     text=(
-                #         "🤖*Thank you for submitting your article*🙏\n\n"
+                #         f"{BOT_EMOJI} <b>Thank you for submitting your article</b> {NAMASTE_EMOJI}\n\n"
                 #         "✅Kindly wait while your report is being prepared. I will notify you as soon as it is ready for download."
                 #     ),
-                #     parse_mode="Markdown",
+                #     parse_mode="HTML",
                 #     business_connection_id=bm.business_connection_id if is_business else None,
                 #     reply_parameters=reply_params
                 # )
@@ -618,11 +651,11 @@ async def handle_all_updates(update: Update, context: ContextTypes.DEFAULT_TYPE)
                             business_connection_id=bm.business_connection_id,
                             chat_id=bm.chat.id,
                             text=(
-                                "🤖 *Thank you for submitting your article* 🙏\n\n"
-                                "✅ Kindly wait while your report is being prepared. "
+                                f"{BOT_EMOJI} <b>Thank you for submitting your article</b> {NAMASTE_EMOJI}\n\n"
+                                f"{GREEN_TICK_EMOJI} Kindly wait while your report is being prepared. "
                                 "I will notify you as soon as it is ready for download."
                             ),
-                            parse_mode="Markdown"
+                            parse_mode="HTML"
                         )
 
                         logger.info(
@@ -645,10 +678,10 @@ async def handle_all_updates(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 # await context.bot.send_message(
                 #     chat_id=bm.chat.id,
                 #     text=(
-                #         "🤖*Thank you for submitting your article*🙏\n\n"
-                #         "✅Kindly wait while your report is being prepared. I will notify you as soon as it is ready for download."
+                #         f"{BOT_EMOJI} <b>Thank you for submitting your article</b> {NAMASTE_EMOJI}\n\n"
+                #         f"{GREEN_TICK_EMOJI} Kindly wait while your report is being prepared. I will notify you as soon as it is ready for download."
                 #     ),
-                #     parse_mode="Markdown",
+                #     parse_mode="HTML",
                 #     reply_parameters=None
                 # )
                 if is_business:
@@ -664,11 +697,11 @@ async def handle_all_updates(update: Update, context: ContextTypes.DEFAULT_TYPE)
                             business_connection_id=bm.business_connection_id,
                             chat_id=bm.chat.id,
                             text=(
-                                "🤖 *Thank you for submitting your article* 🙏\n\n"
-                                "✅ Kindly wait while your report is being prepared. "
+                                f"{BOT_EMOJI} <b>Thank you for submitting your article</b> {NAMASTE_EMOJI}\n\n"
+                                f"{GREEN_TICK_EMOJI} Kindly wait while your report is being prepared. "
                                 "I will notify you as soon as it is ready for download."
                             ),
-                            parse_mode="Markdown"
+                            parse_mode="HTML"
                         )
 
                         logger.info(
@@ -692,12 +725,12 @@ async def handle_all_updates(update: Update, context: ContextTypes.DEFAULT_TYPE)
             err_msg = str(e)
             admin_advice = ""
             if "business_peer_invalid" in err_msg.lower():
-                admin_advice = "\n\n💡 *Tip:* Please check if your bot has 'Can Reply' toggled ON in your Telegram app: *Settings -> Business -> Chatbots*."
+                admin_advice = f"\n\n{BULB_EMOJI} <b>Tip:</b> Please check if your bot has 'Can Reply' toggled ON in your Telegram app: <b>Settings -> Business -> Chatbots</b>."
             try:
                 await context.bot.send_message(
                     chat_id=ADMIN_ID,
-                    text=f"⚠️ *Error in document handler:*\n`{err_msg}`{admin_advice}\n\nUser ID: `{bm.chat.id}`",
-                    parse_mode="Markdown"
+                    text=f"{WARNING_EMOJI} <b>Error in document handler:</b>\n{err_msg}{admin_advice}\n\nUser ID: `{bm.chat.id}`",
+                    parse_mode="HTML"
                 )
             except Exception as notify_err:
                 logger.error(f"Failed to notify admin of error: {notify_err}")
@@ -710,28 +743,32 @@ async def cancel_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.chat_id != ADMIN_ID:
-        await update.message.reply_text("🚫 You are not authorized to use this command.")
+        await update.message.reply_text(
+            f"{CANCEL_EMOJI} You are not authorized to use this command.",
+            parse_mode="HTML"
+        )
         return ConversationHandler.END
 
     await update.message.reply_text(
-        "♻️ Upload Process has Started...",
-        reply_markup=get_cancel_keyboard()
+        f"{RECYCLE_EMOJI} Upload Process has Started...",
+        reply_markup=get_cancel_keyboard(),
+        parse_mode="HTML"
     )
     # Clear any old data from previous sessions
     cleanup_conversation_state(context)
     # Ask for region first
     keyboard = [
-        [InlineKeyboardButton("🇮🇳 Indian", callback_data="region_indian")],
-        [InlineKeyboardButton("🌍 Non-Indian", callback_data="region_non_indian")]
+        [inline_button("🇮🇳 Indian", callback_data="region_indian", style="primary")],
+        [inline_button("🌍 Non-Indian", callback_data="region_non_indian", style="success")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
     await update.message.reply_text(
-        "🌍 *Select your region:*\n\n"
-        "1. 🇮🇳 Indian - Use Razorpay (INR) for payment\n"
-        "2. 🌍 Non-Indian - Use Razorpay (USD) for payment",
+        f"{WORLD_EMOJI} <b>Select your region:</b>\n\n"
+        f"1. {INDIA_EMOJI} Indian - Use Razorpay (INR) for payment\n"
+        f"2. {WORLD_EMOJI} Non-Indian - Use Razorpay (USD) for payment",
         reply_markup=reply_markup,
-        parse_mode="Markdown"
+        parse_mode="HTML"
     )
     return WAITING_FOR_REGION
 
@@ -744,13 +781,13 @@ async def handle_region_selection(update: Update, context: ContextTypes.DEFAULT_
     if query.data == "region_indian":
         context.user_data["region"] = "indian"
         context.user_data["payment_url"] = RAZORPAY_PAYMENT_URL
-        region_text = "🇮🇳 Indian (Razorpay INR)"
+        region_text = f"{INDIA_EMOJI} Indian (Razorpay INR)"
     else:
         context.user_data["region"] = "non_indian"
         context.user_data["payment_url"] = RAZORPAY_USD_PAYMENT_URL
-        region_text = "🌍 Non-Indian (Razorpay USD)"
+        region_text = f"{WORLD_EMOJI} Non-Indian (Razorpay USD)"
 
-    await query.edit_message_text(f"✅ Region selected: {region_text}", parse_mode="Markdown")
+    await query.edit_message_text(f"{GREEN_TICK_EMOJI} <b>Region selected:</b> {region_text}", parse_mode="HTML")
 
     # Now show file upload options
     keyboard = [
@@ -762,8 +799,8 @@ async def handle_region_selection(update: Update, context: ContextTypes.DEFAULT_
 
     await context.bot.send_message(
         chat_id=query.message.chat.id,
-        text="How many files do you want to upload?",
-        reply_markup=reply_markup
+        text=f"<tg-emoji emoji-id=5461117441612462242>📁</tg-emoji> How many files do you want to upload?",
+        reply_markup=reply_markup, parse_mode="HTML"
     )
 
     return WAITING_FOR_UPLOAD_OPTION
@@ -780,25 +817,25 @@ async def upload_option_handler(update: Update, context: ContextTypes.DEFAULT_TY
     context.user_data["files"] = []
     if query.data == "upload_1":
         context.user_data["upload_limit"] = 1
-        await query.edit_message_text("📤 Please send 1 file.")
+        await query.edit_message_text(f"{SEND_FILE_EMOJI} Please send 1 file.", parse_mode="HTML")
         return COLLECTING_FILES
     elif query.data == "upload_2":
         context.user_data["upload_limit"] = 2
-        await query.edit_message_text("📤 Please send 2 files.")
+        await query.edit_message_text(f"{SEND_FILE_EMOJI} Please send 2 files.", parse_mode="HTML")
         return COLLECTING_FILES
     else:
-        await query.edit_message_text("✳️ Please enter how many files you want to upload (must be a number > 2):")
+        await query.edit_message_text(f"{GREEN_TICK_EMOJI} Please enter how many files you want to upload (must be a number > 2):", parse_mode="HTML")
         return WAITING_FOR_MULTIPLE_FILES
 
 
 async def ask_file_count(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_input = update.message.text.strip()
     if not user_input.isdigit() or int(user_input) <= 2:
-        await update.message.reply_text("❌ Please enter a number greater than 2.")
+        await update.message.reply_text(f"{CROSS_EMOJI} Please enter a number greater than 2.", parse_mode="HTML")
         return WAITING_FOR_MULTIPLE_FILES
 
     context.user_data["upload_limit"] = int(user_input)
-    await update.message.reply_text(f"📤 Please send {user_input} files one by one.")
+    await update.message.reply_text(f"{SEND_FILE_EMOJI} Please send {user_input} files one by one.", parse_mode="HTML")
     return COLLECTING_FILES
 
 
@@ -806,7 +843,7 @@ async def handle_multiple_files(update: Update, context: ContextTypes.DEFAULT_TY
     document = update.message.document
 
     if not document:
-        await update.message.reply_text("Please send a valid file.")
+        await update.message.reply_text(f"{CROSS_EMOJI} Please send a valid file.", parse_mode="HTML")
         return COLLECTING_FILES
 
     file = await context.bot.get_file(document.file_id)
@@ -826,13 +863,13 @@ async def handle_multiple_files(update: Update, context: ContextTypes.DEFAULT_TY
         currency = "$"
     # Step 7: Check if all files are received
     if len(context.user_data.get("raw_files", [])) >= context.user_data["upload_limit"]:
-        await update.message.reply_text(f"✅ All files received. \n"
-                                        f"Now enter payment amount (in {currency}):")
+        await update.message.reply_text(f"{GREEN_TICK_EMOJI} All files received. \n"
+                                        f"{MONEY_EMOJI} Now enter payment amount:", parse_mode="HTML")
         return WAITING_FOR_PAYMENT
 
     await update.message.reply_text(
-        f"📒 File *{document.file_name}* received. Send next file...",
-        parse_mode="Markdown"
+        f"{PDF_SYMBOL_EMOJI} File <b>{document.file_name}</b> received. Send next file...",
+        parse_mode="HTML"
     )
     return COLLECTING_FILES
 
@@ -841,11 +878,12 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """ Handle file upload from users """
     document = update.message.document
     if not document:
-        await update.message.reply_text("No document detected. Please try again.")
+        await update.message.reply_text(f"{CROSS_EMOJI} No document detected. Please try again.", parse_mode="HTML")
         return WAITING_FOR_UPLOAD_OPTION
     await update.message.reply_text(
-        "♻️ Uploading Report ....",
-        reply_markup=get_cancel_keyboard()
+        f"{RECYCLE_EMOJI} Uploading Report ....",
+        reply_markup=get_cancel_keyboard(),
+        parse_mode="HTML"
     )
     logger.info(f"Received file: {document.file_name}")  # Debugging log
 
@@ -863,7 +901,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["file_path"] = file_path
     context.user_data["file_name"] = document.file_name
     # context.job_queue.run_once(delete_message, 0, data=(sent_message.chat.id, sent_message.message_id))
-    await update.message.reply_text("💵 Now, enter the payment amount:")
+    await update.message.reply_text(f"{MONEY_EMOJI} Now, enter the payment amount:", parse_mode="HTML")
 
     return WAITING_FOR_PAYMENT
 
@@ -884,8 +922,8 @@ async def receive_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply_markup = InlineKeyboardMarkup(buttons) if buttons else None
 
     await update.message.reply_text(
-        "✍️ Please enter the name of the user (or tap below):",
-        reply_markup=reply_markup
+        f"<tg-emoji emoji-id='5458382591121964689'>✍️</tg-emoji> Please enter the name of the user (or tap below):",
+        reply_markup=reply_markup, parse_mode="HTML"
     )
     return WAITING_FOR_NAME
 
@@ -903,9 +941,9 @@ async def receive_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply_markup = InlineKeyboardMarkup(keyboard)
 
     await update.message.reply_text(
-        "🖊️ *Do you want to Sign this report?*",
+        f"<tg-emoji emoji-id='5458382591121964689'>✍️</tg-emoji> *Do you want to Sign this report?*",
         reply_markup=reply_markup,
-        parse_mode="Markdown"
+        parse_mode="HTML"
     )
     return WAITING_FOR_SIGN_CONFIRMATION
 
@@ -921,8 +959,8 @@ async def handle_sign_confirmation(update: Update, context: ContextTypes.DEFAULT
     logger.info(f"DEBUG: User chose {'YES' if do_sign else 'NO'} for signing")
 
     await query.edit_message_text(
-        "✅ Report will be signed." if do_sign
-        else "❌ Report will NOT be signed."
+        f"{GREEN_TICK_EMOJI} Report will be signed." if do_sign
+        else f"{CROSS_EMOJI} Report will NOT be signed.", parse_mode="HTML"
     )
 
     # Process all files with the signing preference
@@ -931,7 +969,7 @@ async def handle_sign_confirmation(update: Update, context: ContextTypes.DEFAULT
 
         if not processed_files:
             cleanup_conversation_state(context)
-            await query.edit_message_text("❌ No files could be processed.")
+            await query.edit_message_text(f"{CROSS_EMOJI} No files could be processed.", parse_mode="HTML")
             await restore_admin_keyboard(update, context, "Admin keyboard restored.")
             return ConversationHandler.END
 
@@ -940,7 +978,7 @@ async def handle_sign_confirmation(update: Update, context: ContextTypes.DEFAULT
     except Exception as e:
         logger.error(f"Error processing files: {e}")
         cleanup_conversation_state(context)
-        await query.edit_message_text("❌ Error processing files.")
+        await query.edit_message_text(f"{CROSS_EMOJI} Error processing files.", parse_mode="HTML")
         await restore_admin_keyboard(update, context, "Admin keyboard restored.")
         return ConversationHandler.END
 
@@ -996,8 +1034,9 @@ async def receive_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not user_id:
         await context.bot.send_message(
             chat_id=chat_id,
-            text="❌ User ID not found.",
-            reply_markup=get_admin_keyboard()
+            text=f"{CROSS_EMOJI} User ID not found.",
+            reply_markup=get_admin_keyboard(),
+            parse_mode="HTML"
         )
         cleanup_conversation_state(context)
         return ConversationHandler.END
@@ -1017,39 +1056,49 @@ async def receive_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if "files" not in context.user_data or not context.user_data["files"]:
         await context.bot.send_message(
             chat_id=chat_id,
-            text="🚫 No files found.",
-            reply_markup=get_admin_keyboard()
+            text=f"{CROSS_EMOJI} No files found.",
+            reply_markup=get_admin_keyboard(),
+            parse_mode="HTML"
         )
         cleanup_conversation_state(context)
         return ConversationHandler.END
 
-    initial_text = "♻️ Uploading file to Google Drive..." if google_drive_files else "♻️ Uploading file to Microsoft OneDrive..."
+    if google_drive_files:
+        initial_text = f"{RECYCLE_EMOJI} Uploading file to Google Drive..."
+    elif pcloud_utils:
+        initial_text = f"{RECYCLE_EMOJI} Uploading file to pCloud Storage..."
+    else:
+        initial_text = f"{RECYCLE_EMOJI} Uploading file to Cloud Storage..."
+
     await context.bot.send_message(
         chat_id=chat_id,
         text=initial_text,
-        reply_markup=get_cancel_keyboard()
+        reply_markup=get_cancel_keyboard(),
+        parse_mode="HTML"
     )
 
     files_uploaded = []
     providers_used = []
     error_occurred = None
-    use_onedrive_for_batch = (google_drive_files is None)
+    preferred_provider = None
 
     for path, _ in context.user_data["files"]:
         try:
-            file_info, provider, switched = await upload_to_storage_with_fallback(
+            file_info, provider, switched, prov_key = await upload_to_storage_with_fallback(
                 file_path=path,
                 user_name=name,
                 user_id=user_id,
-                force_onedrive=use_onedrive_for_batch
+                preferred_provider=preferred_provider
             )
-            if switched and not use_onedrive_for_batch:
-                use_onedrive_for_batch = True
+            if prov_key:
+                preferred_provider = prov_key
+
+            if switched and preferred_provider:
                 try:
                     await context.bot.send_message(
                         chat_id=chat_id,
-                        text="⚠️ *Google Drive encountered an issue.* Automatically switching to **Microsoft OneDrive** fallback...",
-                        parse_mode="Markdown"
+                        text=f"{WARNING_EMOJI} Notice: Storing file via <b>{provider}</b>...",
+                        parse_mode="HTML"
                     )
                 except Exception as notify_err:
                     logger.debug(f"Could not send fallback switch notification: {notify_err}")
@@ -1067,20 +1116,20 @@ async def receive_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
         admin_advice = ""
         if "invalid_grant" in err_msg.lower() or "account not found" in err_msg.lower():
             admin_advice = (
-                "\n\n🔑 *Google Auth Issue:*\n"
+                "\n\n🔑 <b>Google Auth Issue:</b>\n"
                 "Google OAuth credentials may have expired or need refreshing.\n"
                 "Please verify token.json or GOOGLE_OAUTH_* in .env."
             )
-        elif "onedrive" in err_msg.lower() and ("client_secret" in err_msg.lower() or "unauthorized" in err_msg.lower()):
+        elif "pcloud" in err_msg.lower() and ("credentials" in err_msg.lower() or "password" in err_msg.lower()):
             admin_advice = (
-                "\n\n🔑 *OneDrive Auth Issue:*\n"
-                "Please verify AZURE_TENANT_ID, AZURE_CLIENT_ID, and AZURE_CLIENT_SECRET in .env."
+                "\n\n🔑 <b>pCloud Auth Issue:</b>\n"
+                "Please verify PCLOUD_EMAIL and PCLOUD_PASSWORD in .env."
             )
         await context.bot.send_message(
             chat_id=chat_id,
-            text=f"❌ *Upload failed across cloud providers.*\n\nError Details:\n`{err_msg}`{admin_advice}",
+            text=f"{CROSS_EMOJI} <b>Upload failed across cloud providers.</b>\n\nError Details:\n<code>{err_msg}</code>{admin_advice}",
             reply_markup=get_admin_keyboard(),
-            parse_mode="Markdown"
+            parse_mode="HTML"
         )
         cleanup_conversation_state(context)
         return ConversationHandler.END
@@ -1104,18 +1153,18 @@ async def receive_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     storage_display = ", ".join(providers_used) if providers_used else "Cloud Storage"
     files_formatted = "\n".join(
-        [f"📄 File {i + 1}: <b>{f.get('file_name', 'Report')}</b> ({f.get('provider', 'cloud')})"
+        [f"{PDF_FILE_EMOJI} File {i + 1}: <b>{f.get('file_name', 'Report')}</b> ({f.get('provider', 'cloud')})"
          for i, f in enumerate(files_uploaded)]
     )
 
     await context.bot.send_message(
         chat_id=chat_id,
         text=(
-            f"<b>🔰REPORT UPLOADED SUCCESSFULLY!🔰</b>\n\n"
-            f"👤 <b>Name:</b> <a href='tg://user?id={user_id}'>{name}</a>\n"
-            f"☁️ <b>Storage:</b> {storage_display} (Stored Privately)\n"
-            f"💰 <b>Amount:</b> {payment_amount}\n\n"
-            f"<b>📁 Stored Files:</b>\n{files_formatted}\n\n"
+            f"<b>{CRACKER_EMOJI}REPORT UPLOADED SUCCESSFULLY!{CRACKER_EMOJI}</b>\n\n"
+            f"<tg-emoji emoji-id='5818715087237549366'>👤</tg-emoji> <b>Name:</b> <a href='tg://user?id={user_id}'>{name}</a>\n"
+            f"<tg-emoji emoji-id='4947513368182260483'>☁️</tg-emoji> <b>Storage:</b> {storage_display} (Stored Privately)\n"
+            f"{MONEY_EMOJI} <b>Amount:</b> {payment_amount}\n\n"
+            f"<tg-emoji emoji-id='4947513368182260483'>📁</tg-emoji> <b>Stored Files:</b>\n{files_formatted}\n\n"
             f"<i>Files will be downloaded from cloud and delivered as PDF documents upon payment verification.</i>"
         ),
         parse_mode="HTML",
@@ -1135,7 +1184,7 @@ async def receive_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(
             business_connection_id=business_conn_id,
             chat_id=user_id,
-            text=f"<b>🔰REPORT IS READY🔰</b>\n\n"
+            text=f"<b>{CRACKER_EMOJI}REPORT IS READY{CRACKER_EMOJI}</b>\n\n"
                  f"Please, click on the button below and make the payment of"
                  f" <b>{payment_amount}</b> to receive your report.",
             reply_markup=reply_markup,
@@ -1148,103 +1197,127 @@ async def receive_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Fallback to direct send
         await context.bot.send_message(
             chat_id=user_id,
-            text=f"<b>🔰REPORT IS READY🔰</b>\n\n"
+            text=f"<b>{CRACKER_EMOJI}REPORT IS READY{CRACKER_EMOJI}</b>\n\n"
                  f"Please, click on the button below and make the payment of"
                  f" <b>{payment_amount}</b> to receive your report.",
             reply_markup=reply_markup,
             parse_mode="HTML"
         )
         logger.info(f"Sent report ready message to {user_id} directly (fallback)")
+
     # remove_user_data(user_id)
     cleanup_conversation_state(context)
     return ConversationHandler.END
 
 
-async def upload_to_storage_with_fallback(file_path, user_name, user_id, force_onedrive=False):
+async def upload_to_storage_with_fallback(file_path, user_name, user_id, preferred_provider=None):
     """
-    Upload file privately to Google Drive with automatic fallback to Microsoft OneDrive.
+    Upload file privately to cloud storage with automatic fallback across providers:
+    Google Drive -> pCloud
     Returns:
-        tuple: (file_info_dict, provider_name, switched_to_fallback)
-        file_info_dict format: {"file_id": ..., "file_name": ..., "provider": "google_drive" | "onedrive"}
+        tuple: (file_info_dict, provider_name, switched_to_fallback, actual_provider_key)
+        file_info_dict format: {"file_id": ..., "file_name": ..., "provider": "google_drive" | "pcloud"}
     """
-    global google_drive_files, onedrive_files
+    global google_drive_files, pcloud_utils
     folder_name = f"{user_name} ({user_id})"
-    gdrive_error = None
+    errors = {}
     switched = False
 
-    # Retry loading google_drive_files if it was not available at startup
-    if not force_onedrive and google_drive_files is None:
+    # Retry loading pcloud_utils dynamically if needed
+    if pcloud_utils is None:
         try:
-            import google_drive_files as gdf
-            google_drive_files = gdf
-            logger.info("Retried and successfully initialized google_drive_files on-demand.")
-        except Exception as retry_err:
-            logger.warning(f"Google Drive on-demand retry failed: {retry_err}")
+            import pcloud_utils as pcu
+            pcloud_utils = pcu
+        except Exception as pe:
+            logger.debug(f"pcloud_utils import retry failed: {pe}")
 
-    # 1. Try Google Drive first if not forced to OneDrive and module is loaded
-    if not force_onedrive and google_drive_files:
-        try:
-            logger.info(f"Uploading '{file_path}' privately to Google Drive...")
-            file_info = google_drive_files.upload_private_file(
-                file_path=file_path,
-                folder_name=folder_name
-            )
-            if file_info:
-                return file_info, "Google Drive", False
-        except Exception as e:
-            gdrive_error = e
-            logger.warning(
-                f"⚠️ Google Drive upload failed for '{file_path}': {e}. "
-                f"Falling back to Microsoft OneDrive..."
-            )
-            switched = True
-    elif not google_drive_files and not force_onedrive:
-        gdrive_error = "Google Drive is not initialized or configured"
-        switched = True
+    providers_order = ["google_drive", "pcloud"]
+    if preferred_provider in providers_order:
+        providers_order.remove(preferred_provider)
+        providers_order.insert(0, preferred_provider)
 
-    # 2. Fallback to Microsoft OneDrive
-    if onedrive_files:
-        try:
-            logger.info(f"Uploading '{file_path}' privately to Microsoft OneDrive...")
-            file_info = onedrive_files.upload_private_file(
-                file_path=file_path,
-                folder_name=folder_name
-            )
-            if file_info:
-                provider = "Microsoft OneDrive (Fallback)" if gdrive_error else "Microsoft OneDrive"
-                return file_info, provider, switched
-        except Exception as onedrive_error:
-            logger.error(f"❌ Microsoft OneDrive upload failed: {onedrive_error}")
-            raise RuntimeError(
-                f"Cloud storage upload failed across both providers!\n\n"
-                f"• Google Drive: {gdrive_error}\n"
-                f"• Microsoft OneDrive: {onedrive_error}"
-            )
-    else:
-        raise RuntimeError(
-            f"Google Drive upload failed ({gdrive_error}) and Microsoft OneDrive is not available."
-        )
+    for prov in providers_order:
+        if prov == "google_drive":
+            if google_drive_files is None and preferred_provider == "google_drive":
+                try:
+                    import google_drive_files as gdf
+                    google_drive_files = gdf
+                except Exception:
+                    pass
+            if google_drive_files:
+                try:
+                    logger.info(f"Uploading '{file_path}' privately to Google Drive...")
+                    file_info = google_drive_files.upload_private_file(
+                        file_path=file_path,
+                        folder_name=folder_name
+                    )
+                    if file_info:
+                        prov_name = "Google Drive" if not errors else "Google Drive (Fallback)"
+                        return file_info, prov_name, switched, "google_drive"
+                except Exception as e:
+                    errors["Google Drive"] = str(e)
+                    logger.warning(f"⚠️ Google Drive upload failed for '{file_path}': {e}. Trying fallback...")
+                    switched = True
+            else:
+                errors["Google Drive"] = "Google Drive is not initialized or configured"
+
+        elif prov == "pcloud":
+            if pcloud_utils is None:
+                try:
+                    import pcloud_utils as pcu
+                    pcloud_utils = pcu
+                except Exception:
+                    pass
+            if pcloud_utils:
+                try:
+                    logger.info(f"Uploading '{file_path}' privately to pCloud...")
+                    file_info = pcloud_utils.upload_private_file(
+                        file_path=file_path,
+                        folder_name=folder_name
+                    )
+                    if file_info:
+                        prov_name = "pCloud" if not errors else "pCloud (Fallback)"
+                        return file_info, prov_name, switched, "pcloud"
+                except Exception as e:
+                    errors["pCloud"] = str(e)
+                    logger.warning(f"⚠️ pCloud upload failed for '{file_path}': {e}.")
+                    switched = True
+            else:
+                errors["pCloud"] = "pCloud is not initialized or configured"
+
+    err_details = "\n".join([f"• {k}: {v}" for k, v in errors.items()])
+    raise RuntimeError(f"Cloud storage upload failed across all providers!\n\n{err_details}")
 
 
 def download_cloud_file_bytes(file_info):
     """
-    Download file binary bytes from Google Drive or Microsoft OneDrive based on provider metadata.
-    file_info format: {"file_id": ..., "file_name": ..., "provider": "google_drive" | "onedrive"}
+    Download file binary bytes from Google Drive or pCloud based on provider metadata.
+    file_info format: {"file_id": ..., "file_name": ..., "provider": "google_drive" | "pcloud"}
     Returns: bytes
     """
+    global google_drive_files, pcloud_utils
     provider = file_info.get("provider")
     file_id = file_info.get("file_id")
 
     if provider == "google_drive":
         if not google_drive_files:
-            raise RuntimeError("Google Drive module not loaded.")
+            try:
+                import google_drive_files as gdf
+                google_drive_files = gdf
+            except Exception:
+                raise RuntimeError("Google Drive module not loaded.")
         return google_drive_files.download_file_bytes(file_id)
-    elif provider == "onedrive":
-        if not onedrive_files:
-            raise RuntimeError("Microsoft OneDrive module not loaded.")
-        return onedrive_files.download_file_bytes(file_id)
+    elif provider == "pcloud":
+        if not pcloud_utils:
+            try:
+                import pcloud_utils as pcu
+                pcloud_utils = pcu
+            except Exception:
+                raise RuntimeError("pCloud module not loaded.")
+        return pcloud_utils.download_file_bytes(file_id)
     else:
         raise ValueError(f"Unknown storage provider: {provider}")
+
 
 
 async def upload_to_drive(file_path, user_name, user_id):
@@ -1252,8 +1325,9 @@ async def upload_to_drive(file_path, user_name, user_id):
     Upload file to cloud storage with automatic fallback.
     Maintained for backward compatibility.
     """
-    file_info, _, _ = await upload_to_storage_with_fallback(file_path, user_name, user_id)
+    file_info, _, _, _ = await upload_to_storage_with_fallback(file_path, user_name, user_id)
     return file_info
+
 
 
 # ------------------ Start Command ------------------ #
@@ -1328,15 +1402,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 business_connection_id=business_conn_id,
                 chat_id=user_id,
                 text=(
-                    f"*🔰Report Downloader Bot🔰*\n\n"
+                    f"<b>{CRACKER_EMOJI}Report Downloader Bot{CRACKER_EMOJI}</b>\n\n"
                     f"To download your report, follow these two steps:\n"
-                    f" 1️⃣ First click on the button below and make the payment of {payment_amount}.\n"
-                    f" 2️⃣ After payment download the report.\n\n"
-                    f" Your User ID: `{user_id}` (tap to copy)\n\n"
-                    f"✅ Use this User ID on {payment_method} Payment Gateway."
+                    f"<tg-emoji emoji-id='5461033346152804686'>1️⃣</tg-emoji> First click on the button below and make the payment of {payment_amount}.\n"
+                    f"<tg-emoji emoji-id='5469622950032321924'>2️⃣</tg-emoji> After payment download the report.\n\n"
+                    f" Your User ID: <code>{user_id}</code> (tap to copy)\n\n"
+                    f"{GREEN_TICK_EMOJI} Use this User ID on {payment_method} Payment Gateway."
                 ),
                 reply_markup=reply_markup,
-                parse_mode="Markdown"
+                parse_mode="HTML"
             )
             logger.info(f"Sent report downloader message to {user_id} via business connection")
         except Exception as conn_err:
@@ -1345,16 +1419,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await context.bot.send_message(
                 chat_id=user_id,
                 text=(
-                    f"*🔰Report Downloader Bot🔰*\n\n"
+                    f"<b>{CRACKER_EMOJI}Report Downloader Bot{CRACKER_EMOJI}</b>\n\n"
                     f"To download your report, follow these two steps:\n"
-                    f" 1️⃣ First click on the button below and make the payment of {payment_amount}.\n"
-                    f" 2️⃣ After payment download the report.\n\n"
-                    f" Your User ID: `{user_id}` (tap to copy)\n\n"
-                    f"✅ Use this User ID on {payment_method} Payment Gateway."
+                    f"<tg-emoji emoji-id='5461033346152804686'>1️⃣</tg-emoji> First click on the button below and make the payment of {payment_amount}.\n"
+                    f"<tg-emoji emoji-id='5469622950032321924'>2️⃣</tg-emoji> After payment download the report.\n\n"
+                    f" Your User ID: <code>{user_id}</code> (tap to copy)\n\n"
+                    f"{GREEN_TICK_EMOJI} Use this User ID on {payment_method} Payment Gateway."
                 ),
                 reply_markup=reply_markup,
-                parse_mode="Markdown"
+                parse_mode="HTML"
             )
+
     else:
         if chat_id == ADMIN_ID:
             await reply(
@@ -1363,7 +1438,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         else:
             await reply(
-                "🚫 There is no information about your report. Please contact Admin @coding_services.")
+                f"{CROSS_EMOJI} There is no information about your report. Please contact Admin @coding_services.",parse_mode="HTML")
 
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1434,7 +1509,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 **kwargs
             )
 
-    await edit_msg(f"♻️  Payment verifying. Please wait...")
+    await edit_msg(f"{RECYCLE_EMOJI}  Payment verifying. Please wait...", parse_mode="HTML")
     report_links = load_report_links()  # Refresh from Firebase
     target_user_key = str(user_id) if str(user_id) in report_links else user_id
     if target_user_key in report_links:
@@ -1480,9 +1555,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if paid:
             # Inform user we are fetching the report
             await edit_msg(
-                f"<b>🔰PAYMENT VERIFIED!🔰</b>\n\n"
-                f"🙏 Thank you for making the payment.\n"
-                f"⏳ Fetching your report from cloud storage...",
+                f"<b>{CRACKER_EMOJI}PAYMENT VERIFIED!{CRACKER_EMOJI}</b>\n\n"
+                f"{NAMASTE_EMOJI} Thank you for making the payment.\n"
+                f"<tg-emoji emoji-id='5334885140147479028'>⏳</tg-emoji> Fetching your report from cloud storage...",
                 parse_mode="HTML"
             )
 
@@ -1503,15 +1578,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         doc_stream = io.BytesIO(file_bytes)
                         doc_stream.name = file_name
 
-                        caption = f"📄 <b>{file_name}</b>"
                         try:
                             await context.bot.send_document(
                                 business_connection_id=business_conn_id,
                                 chat_id=user_id,
                                 document=doc_stream,
-                                filename=file_name,
-                                caption=caption,
-                                parse_mode="HTML"
+                                filename=file_name
                             )
                             logger.info(f"Sent {file_name} to {user_id} via business connection.")
                         except Exception as doc_conn_err:
@@ -1522,9 +1594,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             await context.bot.send_document(
                                 chat_id=user_id,
                                 document=doc_stream,
-                                filename=file_name,
-                                caption=caption,
-                                parse_mode="HTML"
+                                filename=file_name
                             )
                             logger.info(f"Sent {file_name} to {user_id} directly (fallback).")
                     except Exception as dl_err:
@@ -1533,15 +1603,15 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
                 if delivery_success:
                     await edit_msg(
-                        f"<b>🔰PAYMENT VERIFIED🔰</b>\n\n"
-                        f"🙏 Thank you for making the payment.\n\n"
-                        f"✅ <b>Your report has been sent above as a PDF document.</b>",
+                        f"<b>{CRACKER_EMOJI}PAYMENT VERIFIED{CRACKER_EMOJI}</b>\n\n"
+                        f"{NAMASTE_EMOJI} Thank you for making the payment.\n\n"
+                        f"{GREEN_TICK_EMOJI} <b>Your report has been sent above as a PDF document.</b>",
                         parse_mode="HTML"
                     )
                 else:
                     await edit_msg(
-                        f"<b>🔰PAYMENT VERIFIED🔰</b>\n\n"
-                        f"⚠️ There was an issue downloading one or more files.\n"
+                        f"<b>{CRACKER_EMOJI}PAYMENT VERIFIED{CRACKER_EMOJI}</b>\n\n"
+                        f"{WARNING_EMOJI} There was an issue downloading one or more files.\n"
                         f"Please contact Admin @coding_services.",
                         parse_mode="HTML"
                     )
@@ -1551,9 +1621,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     [f"📥 File {i + 1}: {link}" for i, link in enumerate(user_report["links"])]
                 )
                 await edit_msg(
-                    f"<b>🔰PAYMENT VERIFIED🔰</b>\n\n"
-                    f"🙏 Thank you for making the payment.\n\n"
-                    f"✅ Download your report by clicking on the link below:\n\n"
+                    f"<b>{CRACKER_EMOJI}PAYMENT VERIFIED{CRACKER_EMOJI}</b>\n\n"
+                    f"{NAMASTE_EMOJI} Thank you for making the payment.\n\n"
+                    f"{GREEN_TICK_EMOJI} Download your report by clicking on the link below:\n\n"
                     f"<b>⬇️ Report Download Links:</b>\n{links_formatted}",
                     parse_mode="HTML"
                 )
@@ -1595,11 +1665,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await context.bot.send_message(
                         business_connection_id=business_conn_id,
                         chat_id=user_id,
-                        text=f"*🔰JOIN & SHARE🔰*\n\n"
-                             f"✅Please share and join our Telegram channel with your friends to stay updated "
+                        text=f"<b>{CRACKER_EMOJI}JOIN & SHARE{CRACKER_EMOJI}</b>\n\n"
+                             f"{GREEN_TICK_EMOJI} Please share and join our Telegram channel with your friends to stay updated "
                              f"about our products and services and also for weekly giveaways🎁\n\n"
-                             f"❤️ Join our Telegram channel: https://t.me/+66qt38tocAI0ZWI1",
-                        parse_mode="Markdown"
+                             f"{TELEGRAM_EMOJI} Join our Telegram channel: https://t.me/+66qt38tocAI0ZWI1",
+                        parse_mode="HTML"
                     )
                     logger.info(f"Sent join & share message to {user_id} via business connection")
                 except Exception as conn_err:
@@ -1609,15 +1679,16 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     try:
                         await context.bot.send_message(
                             chat_id=user_id,
-                            text=f"*🔰JOIN & SHARE🔰*\n\n"
-                                 f"✅Please share and join our Telegram channel with your friends to stay updated "
+                            text=f"<b>{CRACKER_EMOJI}JOIN & SHARE{CRACKER_EMOJI}</b>\n\n"
+                                 f"{GREEN_TICK_EMOJI} Please share and join our Telegram channel with your friends to stay updated "
                                  f"about our products and services and also for weekly giveaways🎁\n\n"
-                                 f"❤️ Join our Telegram channel: https://t.me/+66qt38tocAI0ZWI1",
-                            parse_mode="Markdown"
+                                 f"{TELEGRAM_EMOJI} Join our Telegram channel: https://t.me/+66qt38tocAI0ZWI1",
+                            parse_mode="HTML"
                         )
                         logger.info(f"Sent join & share message to {user_id} directly (fallback)")
                     except Exception as direct_err:
                         logger.warning(f"Failed sending join & share message to {user_id} directly: {direct_err}")
+
             else:
                 logger.info(f"User {user_id} is already subscribed to channel {CHANNEL_ID}. Skipping JOIN & SHARE message.")
 
@@ -1627,24 +1698,24 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         else:
             await edit_msg(
-                f"<b>❌ PAYMENT NOT VERIFIED YET ❌</b>\n\n"
+                f"<b>{CROSS_EMOJI} PAYMENT NOT VERIFIED YET {CROSS_EMOJI}</b>\n\n"
                 f"We could not verify your payment of <b>{payment_amount}</b> at this moment.\n\n"
-                f"1️⃣ If you have not paid yet, please make the payment first using the button below.\n"
-                f"2️⃣ If you have already paid, it may take 1-2 minutes to register. Please try clicking <b>📥 Download Report</b> again in a few moments.\n\n"
-                f"✅ Your User ID: `{user_id}` (tap to copy)\n"
-                f"✅ Need help? Contact Admin @coding_services.",
+                f"<tg-emoji emoji-id='5461033346152804686'>1️⃣</tg-emoji> If you have not paid yet, please make the payment first using the button below.\n"
+                f"<tg-emoji emoji-id='5469622950032321924'>2️⃣</tg-emoji> If you have already paid, it may take 1-2 minutes to register. Please try clicking <b>📥 Download Report</b> again in a few moments.\n\n"
+                f"{GREEN_TICK_EMOJI} Your User ID: <code>{user_id}</code> (tap to copy)\n"
+                f"{TELEGRAM_EMOJI} Need help? Contact Admin @coding_services.",
                 parse_mode="HTML",
                 reply_markup=reply_markup
             )
     else:
-        await edit_msg("⭕️ Your report is not ready. Please wait for some time!")
+        await edit_msg(f"{CANCEL_EMOJI} Your report is not ready. Please wait for some time!", parse_mode="HTML")
 
 
 # ------------------ Admin Command: Show Reports ------------------ #
 async def show_reports(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     if user_id != ADMIN_ID:
-        await update.message.reply_text("🚫 You are not authorized to use this command.")
+        await update.message.reply_text(f"{CANCEL_EMOJI} You are not authorized to use this command.", parse_mode="HTML")
         return ConversationHandler.END
 
     report_links = load_report_links()  # Refresh from Firebase
@@ -1662,6 +1733,9 @@ async def show_reports(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # user_link = f"🆔 User ID:<a href='tg://user?id={chat_id}'>{chat_id}</a>"
         files = details.get("files", [])
         links = details.get("links", [])
+        amount = details.get("amount", "Unknown")
+        region = details.get("region", "indian")
+        payment_amount = f"Rs {amount}/-" if region == "indian" else f"${amount}"
 
         if files:
             file_lines = "\n".join(
@@ -1676,13 +1750,13 @@ async def show_reports(update: Update, context: ContextTypes.DEFAULT_TYPE):
         messages.append(
             f"<b>👤 Name:</b> <a href='tg://user?id={chat_id}'> {name}</a>\n"
             f"<b>🆔 User ID:</b> <code>{chat_id}</code>\n"
-            f"<b>💰 Amount:</b> Rs {amount}/-\n"
+            f"<b>💰 Amount:</b> {payment_amount}\n"
             f"{file_lines}\n"
         )
 
     final_report = "\n\n".join(messages)
     await update.message.reply_text(
-        f"📜 <b>Not Downloaded Reports:</b>\n\n{final_report}\n"
+        f"{REPORTS_EMOJI} <b>Not Downloaded Reports:</b>\n\n{final_report}\n"
         f"✂️ <b>To delete a report, send the User ID now.</b>",
         parse_mode="HTML",
         disable_web_page_preview=True,
@@ -1703,7 +1777,7 @@ async def delete_user_report(update: Update, context: ContextTypes.DEFAULT_TYPE)
         )
     else:
         await update.message.reply_text(
-            f"⚠️ No data found for user ID {user_id}.",
+            f"{WARNING_EMOJI} No data found for user ID {user_id}.",
             reply_markup=get_admin_keyboard()
         )
     return ConversationHandler.END
@@ -1733,7 +1807,7 @@ async def show_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     final_msg = "\n".join(messages)
     await update.message.reply_text(
-        f"📋 <b>Users who sent their articles recently:</b>\n\n{final_msg}\n"
+        f"{USERS_EMOJI} <b>Users who sent their articles recently:</b>\n\n{final_msg}\n"
         f"✂️ <b>To delete a user, send their business_chat_id now.</b>",
         parse_mode="HTML",
         reply_markup=get_admin_keyboard()
@@ -1756,7 +1830,7 @@ async def delete_user_by_chat_id(update: Update, context: ContextTypes.DEFAULT_T
             return ConversationHandler.END
 
     await update.message.reply_text(
-        f"⚠️ No user found with business_chat_id {chat_id_to_delete}.",
+        f"{WARNING_EMOJI} No user found with business_chat_id {chat_id_to_delete}.",
         reply_markup=get_admin_keyboard()
     )
     return ConversationHandler.END
@@ -1782,12 +1856,15 @@ Commands available:
 async def main():
     """ Main function to start the bot """
     application = Application.builder().token(TOKEN).build()
-    admin_button_filter = filters.Text([
-        UPLOAD_BUTTON,
-        SHOW_REPORTS_BUTTON,
-        SHOW_USERS_BUTTON,
-        CANCEL_BUTTON,
-    ])
+
+    cancel_filter = filters.Text([CANCEL_BUTTON_TEXT, "🚫 Cancel", "Cancel"])
+    upload_filter = filters.Text([UPLOAD_BUTTON_TEXT, "⬆️ Upload", "Upload"])
+    show_reports_filter = filters.Text([SHOW_REPORTS_BUTTON_TEXT, "📜 Show Reports", "Show Reports"])
+    show_users_filter = filters.Text([SHOW_USERS_BUTTON_TEXT, "👥 Show Users", "Show Users"])
+
+    admin_button_filter = (
+        upload_filter | show_reports_filter | show_users_filter | cancel_filter
+    )
 
     # Attach business update handler in a separate group so it doesn’t block others
     # application.add_handler(
@@ -1819,40 +1896,40 @@ async def main():
     conv_handler_upload = ConversationHandler(
         entry_points=[
             CommandHandler("upload", upload),
-            MessageHandler(filters.Text([UPLOAD_BUTTON]), upload),
+            MessageHandler(upload_filter, upload),
         ],
         states={
             WAITING_FOR_REGION: [
-                MessageHandler(filters.Text([CANCEL_BUTTON]), handle_cancel),
+                MessageHandler(cancel_filter, handle_cancel),
                 CallbackQueryHandler(handle_region_selection, pattern="^region_"),
             ],
             WAITING_FOR_UPLOAD_OPTION: [
-                MessageHandler(filters.Text([CANCEL_BUTTON]), handle_cancel),
+                MessageHandler(cancel_filter, handle_cancel),
                 CallbackQueryHandler(upload_option_handler),
             ],
             WAITING_FOR_MULTIPLE_FILES: [
-                MessageHandler(filters.Text([CANCEL_BUTTON]), handle_cancel),
+                MessageHandler(cancel_filter, handle_cancel),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, ask_file_count),
             ],
             COLLECTING_FILES: [
-                MessageHandler(filters.Text([CANCEL_BUTTON]), handle_cancel),
+                MessageHandler(cancel_filter, handle_cancel),
                 MessageHandler(filters.Document.ALL, handle_multiple_files),
             ],
             WAITING_FOR_PAYMENT: [
-                MessageHandler(filters.Text([CANCEL_BUTTON]), handle_cancel),
+                MessageHandler(cancel_filter, handle_cancel),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, receive_payment),
             ],
             WAITING_FOR_NAME: [
-                MessageHandler(filters.Text([CANCEL_BUTTON]), handle_cancel),
+                MessageHandler(cancel_filter, handle_cancel),
                 CallbackQueryHandler(handle_user_suggestion, pattern=r'^user_select\|'),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, receive_name),
             ],
             WAITING_FOR_SIGN_CONFIRMATION: [
-                MessageHandler(filters.Text([CANCEL_BUTTON]), handle_cancel),
+                MessageHandler(cancel_filter, handle_cancel),
                 CallbackQueryHandler(handle_sign_confirmation, pattern="^sign_"),
             ],
             WAITING_FOR_USER: [
-                MessageHandler(filters.Text([CANCEL_BUTTON]), handle_cancel),
+                MessageHandler(cancel_filter, handle_cancel),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, receive_user),
             ],
         },
@@ -1870,11 +1947,11 @@ async def main():
     conv_handler_delete = ConversationHandler(
         entry_points=[
             CommandHandler("show_reports", show_reports),
-            MessageHandler(filters.Text([SHOW_REPORTS_BUTTON]), show_reports),
+            MessageHandler(show_reports_filter, show_reports),
         ],
         states={
             WAITING_FOR_DELETE_ID: [
-                MessageHandler(filters.Text([CANCEL_BUTTON]), handle_cancel),
+                MessageHandler(cancel_filter, handle_cancel),
                 MessageHandler(filters.TEXT & ~filters.COMMAND & ~admin_button_filter, delete_user_report)
             ]
         },
@@ -1891,11 +1968,11 @@ async def main():
     conv_handler_show_users = ConversationHandler(
         entry_points=[
             CommandHandler("show_users", show_users),
-            MessageHandler(filters.Text([SHOW_USERS_BUTTON]), show_users),
+            MessageHandler(show_users_filter, show_users),
         ],
         states={
             WAITING_FOR_DELETE_USER_ID: [
-                MessageHandler(filters.Text([CANCEL_BUTTON]), handle_cancel),
+                MessageHandler(cancel_filter, handle_cancel),
                 MessageHandler(filters.TEXT & ~filters.COMMAND & ~admin_button_filter, delete_user_by_chat_id)
             ]
         },
@@ -1920,7 +1997,7 @@ async def main():
     application.add_handler(conv_handler_delete)
     application.add_handler(conv_handler_show_users)
     application.add_handler(CommandHandler("cancel", handle_cancel))
-    application.add_handler(MessageHandler(filters.Text([CANCEL_BUTTON]), handle_cancel))
+    application.add_handler(MessageHandler(cancel_filter, handle_cancel))
     application.add_handler(CallbackQueryHandler(button_handler))
 
     # application.run_polling()
